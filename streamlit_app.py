@@ -20,7 +20,7 @@ st.markdown("Predicting the next hour's closing price using intraday data.")
 st.sidebar.header("Controls")
 if st.sidebar.button("Retrain Model"):
     with st.spinner("Fetching data and retraining model..."):
-        df = fetch_data(period="1mo", interval="1m")
+        df = fetch_data(period="7d", interval="1m")
         if not df.empty:
             df_processed = prepare_training_data(df)
             train_model(df_processed)
