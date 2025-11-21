@@ -19,13 +19,21 @@ st.markdown("Predicting the next hour's closing price using intraday data.")
 # Sidebar for controls
 st.sidebar.header("Controls")
 if st.sidebar.button("Retrain Model"):
-    with st.spinner("Fetching data and retraining model..."):
+    with st.status("Retraining model...", expanded=True) as status:
+        st.write("Fetching data from Yahoo Finance...")
         df = fetch_data(period="7d", interval="1m")
+        
         if not df.empty:
+            st.write(f"Data fetched: {len(df)} rows. Processing features...")
             df_processed = prepare_training_data(df)
+            
+            st.write("Training LightGBM model...")
             train_model(df_processed)
-            st.sidebar.success("Model retrained successfully!")
+            
+            status.update(label="Model retrained successfully!", state="complete", expanded=False)
+            st.sidebar.success("Model retrained!")
         else:
+            status.update(label="Failed to fetch data.", state="error")
             st.sidebar.error("Failed to fetch data.")
 
 # Main content
