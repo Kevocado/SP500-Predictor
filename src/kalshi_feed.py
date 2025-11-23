@@ -49,9 +49,16 @@ def get_real_kalshi_markets(ticker):
         
         print(f"🔍 Fetching Kalshi markets for {ticker} (series: {series_ticker})")
         print(f"   URL: {KALSHI_API_URL}")
+        print(f"   Params: {params}")
         print(f"   Has API Key: {bool(API_KEY)}")
         
-        response = requests.get(KALSHI_API_URL, params=params, headers=headers if API_KEY else None)
+        # Add timeout to prevent hanging
+        response = requests.get(
+            KALSHI_API_URL, 
+            params=params, 
+            headers=headers if API_KEY else None,
+            timeout=10  # 10 second timeout
+        )
         
         print(f"   Response Status: {response.status_code}")
         
@@ -59,6 +66,10 @@ def get_real_kalshi_markets(ticker):
         if response.status_code == 200:
             data = response.json()
             markets = data.get('markets', [])
+            print(f"   ✅ Primary fetch returned {len(markets)} markets")
+        else:
+            print(f"   ❌ Primary fetch failed: {response.status_code}")
+            print(f"   Response: {response.text[:300]}")
         
         # Fallback Logic: If no markets found with series filter, try broad fetch
         if not markets:
@@ -67,10 +78,18 @@ def get_real_kalshi_markets(ticker):
                 "limit": 100,
                 "status": "open"
             }
-            fb_response = requests.get(KALSHI_API_URL, params=fallback_params, headers=headers if API_KEY else None)
+            fb_response = requests.get(
+                KALSHI_API_URL, 
+                params=fallback_params, 
+                headers=headers if API_KEY else None,
+                timeout=10
+            )
+            
             if fb_response.status_code == 200:
                 fb_data = fb_response.json()
                 all_markets = fb_data.get('markets', [])
+                
+                print(f"   Fallback: Got {len(all_markets)} total markets")
                 
                 # Filter manually by checking if the series_ticker is in the market's ticker string
                 # e.g. "KXBTC" in "KXBTC-23NOV25-..."
@@ -80,11 +99,16 @@ def get_real_kalshi_markets(ticker):
                 if not markets:
                      markets = [m for m in all_markets if ticker in m.get('ticker', '')]
                 
-                print(f"   Fallback found {len(markets)} markets for {ticker} (using series {series_ticker})")
+                print(f"   ✅ Fallback found {len(markets)} markets for {ticker} (using series {series_ticker})")
+                
+                # Debug: Show first market ticker if available
+                if markets:
+                    print(f"   Example ticker: {markets[0].get('ticker', 'N/A')}")
             else:
-                print(f"❌ Fallback fetch failed: {fb_response.status_code}")
+                print(f"   ❌ Fallback fetch failed: {fb_response.status_code}")
+                print(f"   Response: {fb_response.text[:300]}")
 
-        print(f"   Total markets returned: {len(markets)}")
+        print(f"   📊 Total markets returned: {len(markets)}")
         
         results = []
         for m in markets:
@@ -120,9 +144,21 @@ def get_real_kalshi_markets(ticker):
                 'title': m.get('title', '')
             })
             
-        print(f"   Extracted {len(results)} markets with pricing data")
+        print(f"   ✅ Extracted {len(results)} markets with pricing data")
+        
+        # Additional validation: Check if we got financial markets
+        if results:
+            sample_title = results[0].get('title', '')
+            print(f"   Sample market title: {sample_title}")
+        
         return results
 
+    except requests.exceptions.Timeout:
+        print(f"❌ Timeout fetching Kalshi markets for {ticker}")
+        return []
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Request error in Kalshi feed for {ticker}: {e}")
+        return []
     except Exception as e:
         print(f"❌ Exception in Kalshi feed: {e}")
         import traceback

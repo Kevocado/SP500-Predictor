@@ -40,7 +40,8 @@ else:
 
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features, prepare_training_data
-from src.model import load_model, predict_next_hour, train_model, calculate_probability, get_recent_rmse
+from src.model import load_model, predict_next_hour, train_model, calculate_probability, get_recent_rmse, FeatureMismatchError
+
 from src.evaluation import evaluate_model
 from src.utils import get_market_status, determine_best_timeframe
 from src.kalshi_feed import get_real_kalshi_markets, check_kalshi_connection
@@ -262,10 +263,23 @@ def run_scanner(timeframe_override=None):
             real_markets = get_real_kalshi_markets(ticker)
             buckets = categorize_markets(real_markets, ticker)
             
-            # 2. Load Models
+            # 2. Load Models with Auto-Retrain Logic
             # Hourly Model
             df_hourly = fetch_data(ticker=ticker, period="5d", interval="1m")
-            model_hourly = load_model(ticker=ticker)
+            model_hourly, needs_retrain_hourly = load_model(ticker=ticker)
+            
+            # Auto-retrain if needed
+            if needs_retrain_hourly or model_hourly is None:
+                st.warning(f"⚠️ Model structure changed for {ticker}. Retraining hourly model automatically...")
+                try:
+                    print(f"🔄 Auto-retraining hourly model for {ticker}...")
+                    df_train = fetch_data(ticker=ticker, period="7d", interval="1m")
+                    df_train = prepare_training_data(df_train)
+                    model_hourly = train_model(df_train, ticker=ticker)
+                    print(f"✅ Hourly model for {ticker} retrained successfully")
+                except Exception as e:
+                    print(f"❌ Failed to retrain hourly model for {ticker}: {e}")
+                    model_hourly = None
             
             # Daily Model
             df_daily = fetch_data(ticker=ticker, period="60d", interval="1h")
@@ -273,10 +287,30 @@ def run_scanner(timeframe_override=None):
             
             # 3. Process Hourly Bucket
             if not df_hourly.empty and model_hourly and buckets['hourly']:
-                df_features_hourly = create_features(df_hourly)
-                pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
-                rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
-                curr_price_hourly = df_hourly['Close'].iloc[-1]
+                try:
+                    df_features_hourly = create_features(df_hourly)
+                    pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
+                    rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
+                    curr_price_hourly = df_hourly['Close'].iloc[-1]
+                except FeatureMismatchError as e:
+                    # Feature mismatch detected during prediction - retrain
+                    st.warning(f"⚠️ Feature mismatch detected for {ticker}. Retraining model automatically...")
+                    print(f"🔄 Feature mismatch in prediction for {ticker}: {e}")
+                    try:
+                        df_train = fetch_data(ticker=ticker, period="7d", interval="1m")
+                        df_train = prepare_training_data(df_train)
+                        model_hourly = train_model(df_train, ticker=ticker)
+                        print(f"✅ Hourly model for {ticker} retrained successfully")
+                        
+                        # Retry prediction with new model
+                        df_features_hourly = create_features(df_hourly)
+                        pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
+                        rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
+                        curr_price_hourly = df_hourly['Close'].iloc[-1]
+                    except Exception as retrain_error:
+                        print(f"❌ Failed to retrain and predict for {ticker}: {retrain_error}")
+                        continue  # Skip this ticker
+                
                 
                 # Generate signals for these specific markets
                 # We need to map the markets to the signal format

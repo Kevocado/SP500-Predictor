@@ -8,6 +8,54 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 MODEL_DIR = "model"
 
+# Custom exception for feature mismatches
+class FeatureMismatchError(Exception):
+    """Raised when model expects different features than provided data."""
+    def __init__(self, expected_features, actual_features, expected_count, actual_count):
+        self.expected_features = expected_features
+        self.actual_features = actual_features
+        self.expected_count = expected_count
+        self.actual_count = actual_count
+        super().__init__(
+            f"Feature mismatch: Model expects {expected_count} features but data has {actual_count} features. "
+            f"This usually means new features were added. Auto-retraining required."
+        )
+
+def validate_model_features(model, ticker):
+    """
+    Validates that the model's expected features match the saved feature list.
+    
+    Args:
+        model: Trained LightGBM model.
+        ticker (str): Ticker name.
+        
+    Returns:
+        tuple: (is_valid, expected_count, actual_count, feature_list)
+    """
+    feature_names_path = os.path.join(MODEL_DIR, f"features_{ticker}.pkl")
+    
+    if not os.path.exists(feature_names_path):
+        print(f"⚠️ Feature list not found for {ticker}. Cannot validate.")
+        return (False, 0, 0, [])
+    
+    try:
+        saved_features = joblib.load(feature_names_path)
+        # LightGBM models have num_feature() method
+        model_feature_count = model.num_feature()
+        saved_feature_count = len(saved_features)
+        
+        is_valid = (model_feature_count == saved_feature_count)
+        
+        if not is_valid:
+            print(f"⚠️ Feature count mismatch for {ticker}:")
+            print(f"   Model expects: {model_feature_count} features")
+            print(f"   Saved list has: {saved_feature_count} features")
+        
+        return (is_valid, model_feature_count, saved_feature_count, saved_features)
+    except Exception as e:
+        print(f"❌ Error validating features for {ticker}: {e}")
+        return (False, 0, 0, [])
+
 def get_model_path(ticker):
     return os.path.join(MODEL_DIR, f"lgbm_model_{ticker}.pkl")
 
@@ -79,12 +127,32 @@ def train_model(df, ticker="SPY"):
     return final_model
 
 def load_model(ticker="SPY"):
-    """Loads the trained model for the given ticker."""
+    """
+    Loads the trained model for the given ticker.
+    Also validates that the model's feature count matches the saved feature list.
+    
+    Returns:
+        tuple: (model, needs_retraining) where needs_retraining is True if feature mismatch detected
+    """
     model_path = get_model_path(ticker)
     if not os.path.exists(model_path):
         print(f"Model file {model_path} not found.")
-        return None
-    return joblib.load(model_path)
+        return None, True  # Model missing, needs training
+    
+    try:
+        model = joblib.load(model_path)
+        
+        # Validate features
+        is_valid, expected, actual, _ = validate_model_features(model, ticker)
+        
+        if not is_valid:
+            print(f"⚠️ Model for {ticker} has feature mismatch. Retraining recommended.")
+            return model, True  # Return model but flag for retraining
+        
+        return model, False  # Model is valid
+    except Exception as e:
+        print(f"❌ Error loading model for {ticker}: {e}")
+        return None, True
 
 def predict_next_hour(model, current_data_df, ticker="SPY"):
     """
@@ -97,6 +165,9 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
         
     Returns:
         float: Predicted price.
+        
+    Raises:
+        FeatureMismatchError: If the data features don't match model expectations.
     """
     # We need to generate features for the last row
     # Assumes current_data_df has enough history for lag features
@@ -111,6 +182,30 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
 
     # Get the last row of features
     last_row = current_data_df.iloc[[-1]]
+    
+    # Get available features in the dataframe
+    available_features = set(last_row.columns)
+    expected_features = set(feature_cols)
+    
+    # Check for feature mismatch
+    if len(available_features & expected_features) != len(expected_features):
+        missing = expected_features - available_features
+        extra = available_features - expected_features
+        
+        if missing or extra:
+            print(f"⚠️ Feature alignment issue for {ticker}:")
+            if missing:
+                print(f"   Missing features: {missing}")
+            if extra:
+                print(f"   Extra features: {extra}")
+            
+            # Raise exception to trigger retraining
+            raise FeatureMismatchError(
+                expected_features=feature_cols,
+                actual_features=list(last_row.columns),
+                expected_count=len(feature_cols),
+                actual_count=len(last_row.columns)
+            )
     
     # Ensure features match: select only the expected features in the correct order
     # Fill missing features with 0
