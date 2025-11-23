@@ -4,7 +4,12 @@ from dotenv import load_dotenv
 import pandas as pd
 from datetime import datetime
 
-load_dotenv()
+from pathlib import Path
+
+# Load .env from root directory
+root_dir = Path(__file__).parent.parent
+env_path = root_dir / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
 
 KALSHI_API_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
 API_KEY = os.getenv("KALSHI_API_KEY")

@@ -11,9 +11,10 @@ from pathlib import Path
 from datetime import timedelta, time
 
 # Load environment variables with explicit path
+# Load environment variables with explicit path and override
 current_dir = Path(__file__).parent
 env_path = current_dir / '.env'
-load_dotenv(dotenv_path=env_path)
+load_dotenv(dotenv_path=env_path, override=True)
 
 # Hybrid Loading: .env (Local/Backend) vs st.secrets (Streamlit Cloud)
 # If AZURE_CONNECTION_STRING is missing (e.g., on Cloud where .env is gitignored),
