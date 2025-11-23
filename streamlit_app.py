@@ -218,8 +218,11 @@ def categorize_markets(markets, ticker):
                 buckets['range'].append(m)
                 continue
 
+
             # Time difference in minutes from now (UTC-based compare)
             time_diff_min = (exp_time - now_utc).total_seconds() / 60.0
+            time_diff_hours = time_diff_min / 60.0
+            time_diff_days = time_diff_hours / 24.0
 
             # Hourly: expires within 90 minutes AND (for crypto) inside allowed NY hours
             if 0 < time_diff_min <= 90:
@@ -231,9 +234,9 @@ def categorize_markets(markets, ticker):
                     buckets['hourly'].append(m)
                 continue
 
-            # Daily: if it expires on the same NY date and the expiration hour is around market close
-            # We'll consider daily if expiration local date == today and hour in [15..23]
-            if exp_ny.date() == now_ny.date() and 15 <= exp_ny.hour <= 23:
+            # Daily: expires within 7 days (more flexible to show available markets)
+            # Original logic was too strict (only same day 15-23h)
+            if 0 < time_diff_days <= 7:
                 buckets['daily'].append(m)
                 continue
 
@@ -241,6 +244,7 @@ def categorize_markets(markets, ticker):
             print(f"Error categorizing market: {e}")
 
     return buckets
+
 
 def run_scanner(timeframe_override=None):
     """
