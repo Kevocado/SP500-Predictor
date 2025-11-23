@@ -76,9 +76,6 @@ with tab1:
     else:
         # Prepare features & Predict
         try:
-    else:
-        # Prepare features & Predict
-        try:
             # Always calculate prediction so we can show the Edge Finder (Strikes)
             df_features = create_features(df)
             prediction = predict_next_hour(model, df_features, ticker=selected_ticker)
