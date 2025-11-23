@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import sys
@@ -51,6 +52,7 @@ from src.evaluation import evaluate_model
 from src.utils import get_market_status
 from src.model import load_model, predict_next_hour, calculate_probability, get_recent_rmse
 from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
+from src.signals import generate_trading_signals
 from src.azure_logger import log_prediction, fetch_all_logs
 from datetime import timedelta
 
@@ -81,7 +83,11 @@ with tab1:
     
     if st.button("Scan All Markets"):
         scanner_progress = st.progress(0)
-        scan_results = []
+        
+        # Store results for both tabs
+        all_strikes = []
+        all_ranges = []
+        
         tickers_to_scan = ["SPX", "Nasdaq", "BTC", "ETH"]
         
         for i, ticker in enumerate(tickers_to_scan):
@@ -89,45 +95,47 @@ with tab1:
                 # Check Status FIRST
                 market_status = get_market_status(ticker)
                 if not market_status['is_open']:
-                    continue # Skip closed markets completely
+                    continue # Skip closed markets
 
                 # Fetch & Predict
-                df_scan = fetch_data(ticker=ticker, period="5d", interval="1m")
-                if df_scan.empty: continue
+                # Use Daily model for Scanner if Timeframe is Daily? 
+                # The prompt implies "Daily Range" is a key feature.
+                # Let's stick to the selected timeframe or maybe scan both?
+                # For simplicity, let's respect the global timeframe_view selector
                 
-                model_scan = load_model(ticker=ticker)
-                if not model_scan: continue
+                if timeframe_view == "Daily":
+                    df_scan = fetch_data(ticker=ticker, period="60d", interval="1h")
+                    model_scan = load_daily_model(ticker=ticker)
+                else:
+                    df_scan = fetch_data(ticker=ticker, period="5d", interval="1m")
+                    model_scan = load_model(ticker=ticker)
+                    
+                if df_scan.empty or not model_scan: continue
                 
-                df_features_scan = create_features(df_scan)
-                pred_scan = predict_next_hour(model_scan, df_features_scan, ticker=ticker)
-                rmse_scan = get_recent_rmse(model_scan, df_scan, ticker=ticker)
+                # Predict
+                if timeframe_view == "Daily":
+                    df_features_scan, _ = prepare_daily_data(df_scan)
+                    pred_scan = predict_daily_close(model_scan, df_features_scan.iloc[[-1]])
+                    rmse_scan = df_scan['Close'].iloc[-1] * 0.01 # Approx RMSE
+                else:
+                    df_features_scan = create_features(df_scan)
+                    pred_scan = predict_next_hour(model_scan, df_features_scan, ticker=ticker)
+                    rmse_scan = get_recent_rmse(model_scan, df_scan, ticker=ticker)
+                
                 curr_price_scan = df_scan['Close'].iloc[-1]
                 
-                # Generate Strikes
-                base_price_scan = round(curr_price_scan / 10) * 10
-                strikes_scan = [base_price_scan + (k * 10) for k in range(-2, 3)]
+                # Generate Signals
+                signals = generate_trading_signals(ticker, pred_scan, curr_price_scan, rmse_scan)
                 
-                for strike in strikes_scan:
-                    prob = calculate_probability(pred_scan, strike, rmse_scan)
-                    # Sim Market Price
-                    import random
-                    noise = random.uniform(-10, 10)
-                    mkt_price = min(99, max(1, int(prob + noise)))
-                    edge = prob - mkt_price
+                # Add Ticker info to signals
+                for s in signals['strikes']:
+                    s['Asset'] = ticker
+                    all_strikes.append(s)
                     
-                    action = "PASS"
-                    if prob > 60 and edge > 5: action = "🟢 BUY YES"
-                    elif prob < 40 and edge < -5: action = "🔴 BUY NO"
+                for r in signals['ranges']:
+                    r['Asset'] = ticker
+                    all_ranges.append(r)
                     
-                    if action != "PASS":
-                        scan_results.append({
-                            "Asset": ticker,
-                            "Type": "Hourly", 
-                            "Strike": f"> ${strike}",
-                            "Prob": f"{prob:.1f}%",
-                            "Edge": f"{edge:.1f}%",
-                            "Action": action
-                        })
             except Exception as e:
                 print(f"Scanner error on {ticker}: {e}")
             
@@ -135,12 +143,30 @@ with tab1:
             
         scanner_progress.empty()
         
-        if scan_results:
-            scan_results.sort(key=lambda x: float(x['Edge'].strip('%')), reverse=True)
-            st.success(f"Found {len(scan_results)} LIVE opportunities!")
-            st.dataframe(scan_results, use_container_width=True)
-        else:
-            st.info("No opportunities found in OPEN markets.")
+        # Display Results in Tabs
+        scan_tab1, scan_tab2 = st.tabs(["🎯 Strike Prices (Direction)", "📊 Daily Ranges (Volatility)"])
+        
+        with scan_tab1:
+            if all_strikes:
+                st.caption(f"Directional opportunities based on {timeframe_view} prediction.")
+                st.dataframe(all_strikes, use_container_width=True)
+            else:
+                st.info("No active strike opportunities found.")
+                
+        with scan_tab2:
+            if all_ranges:
+                st.caption(f"Range bucket opportunities based on {timeframe_view} prediction.")
+                
+                # Highlight winners
+                def highlight_winner(row):
+                    return ['background-color: #1b4d1b' if row['Is_Winner'] else '' for _ in row]
+                
+                df_ranges = pd.DataFrame(all_ranges)
+                # Drop the boolean column for display if desired, or keep it
+                # Applying style
+                st.dataframe(df_ranges.style.apply(highlight_winner, axis=1), use_container_width=True)
+            else:
+                st.info("No range opportunities found.")
             
     with st.expander("ℹ️ Guide: Which Timeframe to use?"):
         st.markdown("""
