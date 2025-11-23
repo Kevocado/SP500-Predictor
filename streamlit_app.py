@@ -85,6 +85,11 @@ with tab1:
         
         for i, ticker in enumerate(tickers_to_scan):
             try:
+                # Check Status FIRST
+                market_status = get_market_status(ticker)
+                if not market_status['is_open']:
+                    continue # Skip closed markets completely
+
                 # Fetch & Predict
                 df_scan = fetch_data(ticker=ticker, period="5d", interval="1m")
                 if df_scan.empty: continue
@@ -97,14 +102,6 @@ with tab1:
                 rmse_scan = get_recent_rmse(model_scan, df_scan, ticker=ticker)
                 curr_price_scan = df_scan['Close'].iloc[-1]
                 
-                # Determine Status
-                market_status = get_market_status(ticker)
-                
-                if market_status['is_open']:
-                    status_icon = "🟢"
-                else:
-                    status_icon = "🔴"
-
                 # Generate Strikes
                 base_price_scan = round(curr_price_scan / 10) * 10
                 strikes_scan = [base_price_scan + (k * 10) for k in range(-2, 3)]
@@ -124,8 +121,7 @@ with tab1:
                     if action != "PASS":
                         scan_results.append({
                             "Asset": ticker,
-                            "Type": "Hourly", # Default to Hourly for scanner for now
-                            "Status": status_icon,
+                            "Type": "Hourly", 
                             "Strike": f"> ${strike}",
                             "Prob": f"{prob:.1f}%",
                             "Edge": f"{edge:.1f}%",
@@ -139,13 +135,17 @@ with tab1:
         scanner_progress.empty()
         
         if scan_results:
-            # Sort by absolute edge strength (descending)
-            # Need to parse edge string back to float for sorting
             scan_results.sort(key=lambda x: float(x['Edge'].strip('%')), reverse=True)
-            st.success(f"Found {len(scan_results)} opportunities!")
+            st.success(f"Found {len(scan_results)} LIVE opportunities!")
             st.dataframe(scan_results, use_container_width=True)
         else:
-            st.info("No high-edge opportunities found right now.")
+            st.info("No opportunities found in OPEN markets.")
+            
+    with st.expander("ℹ️ Guide: Which Timeframe to use?"):
+        st.markdown("""
+        *   **Hourly (Standard):** Use this for standard prediction markets (e.g., "Will BTC be > X at 2:00 PM?"). The model predicts the price 60 minutes from now.
+        *   **Daily (Close):** Use this for "Daily Close" markets (e.g., "Will SPX close > X today?"). The model predicts the price at 4:00 PM ET.
+        """)
             
     st.markdown("---")
 
