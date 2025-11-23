@@ -152,6 +152,9 @@ def calculate_probability(predicted_price, strike_price, model_rmse):
     # So we can just use cdf(z_score).
     probability_above = stats.norm.cdf(z_score)
     
+    # Clamp probability to avoid 0% or 100% (0.1% to 99.9%)
+    probability_above = max(0.001, min(0.999, probability_above))
+    
     return probability_above * 100
 
 def get_recent_rmse(model, df, ticker="SPY"):

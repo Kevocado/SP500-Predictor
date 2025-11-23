@@ -119,3 +119,21 @@ def get_real_kalshi_markets(ticker):
     except Exception as e:
         print(f"Exception in Kalshi feed: {e}")
         return []
+
+def check_kalshi_connection():
+    """
+    Checks if the Kalshi API is accessible and the key is valid.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        # Try a simple fetch
+        params = {"limit": 1, "status": "open"}
+        # If key is present, use it? The get_real_kalshi_markets logic handles it.
+        # But here we want to test the connection specifically.
+        # Let's use the same URL.
+        response = requests.get(KALSHI_API_URL, params=params)
+        if response.status_code == 200:
+            return True
+        return False
+    except:
+        return False

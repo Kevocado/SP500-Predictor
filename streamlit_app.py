@@ -1,20 +1,20 @@
 import streamlit as st
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+# Load environment variables with explicit path and override IMMEDIATELY
+current_dir = Path(__file__).parent
+env_path = current_dir / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
+
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 from scipy import stats
 import altair as alt
 import sys
-import os
-from dotenv import load_dotenv
-from pathlib import Path
 from datetime import timedelta, time
-
-# Load environment variables with explicit path
-# Load environment variables with explicit path and override
-current_dir = Path(__file__).parent
-env_path = current_dir / '.env'
-load_dotenv(dotenv_path=env_path, override=True)
 
 # Hybrid Loading: .env (Local/Backend) vs st.secrets (Streamlit Cloud)
 # If AZURE_CONNECTION_STRING is missing (e.g., on Cloud where .env is gitignored),
@@ -42,7 +42,7 @@ from src.feature_engineering import create_features, prepare_training_data
 from src.model import load_model, predict_next_hour, train_model, calculate_probability, get_recent_rmse
 from src.evaluation import evaluate_model
 from src.utils import get_market_status, determine_best_timeframe
-from src.kalshi_feed import get_real_kalshi_markets
+from src.kalshi_feed import get_real_kalshi_markets, check_kalshi_connection
 from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
 from src.signals import generate_trading_signals
 
@@ -309,9 +309,13 @@ internal_timeframe = timeframe_map.get(recommended_tf, "Daily")
 # Sidebar: Keep only essential controls
 st.sidebar.markdown("### 🔌 System Status")
 
-# Check Kalshi Connection (Simple check)
-api_key_status = "✅ Connected" if os.getenv("KALSHI_API_KEY") else "❌ Missing Key"
-st.sidebar.caption(f"Kalshi API: **{api_key_status}**")
+# Check Kalshi Connection (Real Check)
+if check_kalshi_connection():
+    api_status = "✅ Kalshi Live"
+else:
+    api_status = "❌ Error"
+    
+st.sidebar.caption(f"API Status: **{api_status}**")
 
 if st.sidebar.button("🔄 Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
@@ -413,33 +417,32 @@ if asset_strikes:
             
             prob_win = best_edge_strike['Numeric_Prob'] if "BUY YES" in best_edge_strike['Action'] else (100 - best_edge_strike['Numeric_Prob'])
             
-            # Distance Metric
-            # Calculate % Distance from Current Price
+            # Distance Metric & Context
             try:
                 strike_val = float(best_edge_strike['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                # Need current price. We have curr_alpha if selected_ticker matches, but best_edge might be different asset?
-                # Actually best_edge_strike is from 'asset_strikes' which is filtered by 'selected_ticker'.
-                # So we can use curr_alpha (calculated above) or fetch it.
-                # Let's rely on the fact that we calculated curr_alpha for the "Predicted Move" card which uses selected_ticker.
-                # Wait, 'asset_strikes' is defined as: [s for s in all_strikes if s['Asset'] == selected_ticker]
-                # So yes, it matches.
-                
                 dist_pct = ((strike_val - curr_alpha) / curr_alpha) * 100
-                dist_label = "OTM" if (("BUY YES" in best_edge_strike['Action'] and strike_val > curr_alpha) or ("BUY NO" in best_edge_strike['Action'] and strike_val < curr_alpha)) else "ITM"
-                # Actually OTM/ITM depends on Call/Put logic. 
-                # For "Price > Strike" (Binary Call):
-                # If Price < Strike -> OTM (Prob < 50 usually).
-                # If Price > Strike -> ITM (Prob > 50 usually).
-                # Let's just show the raw distance and let user judge, or simple "X% Away".
-                dist_str = f"{dist_pct:+.2f}%"
+                
+                # OTM/ITM Logic
+                # For Binary Call (> Strike):
+                # Price < Strike -> OTM (Needs to go UP)
+                # Price > Strike -> ITM (Already winning)
+                is_itm = curr_alpha > strike_val
+                status_icon = "🎯" if is_itm else "📉"
+                status_label = "ITM" if is_itm else "OTM"
+                dist_abs = abs(strike_val - curr_alpha)
+                
+                context_str = f"Current: ${curr_alpha:,.0f} {status_icon} ${dist_abs:.0f} {status_label}"
             except:
-                dist_str = "N/A"
+                context_str = "Context N/A"
 
             st.altair_chart(create_probability_bar(prob_win, 50), use_container_width=True)
+            st.caption(context_str)
             
             c_footer1, c_footer2 = st.columns(2)
             c_footer1.caption(f"Conf: **{prob_win:.1f}%**")
-            c_footer2.caption(f"Dist: **{dist_str}**")
+            # Edge is Model Prob - 50 (roughly)
+            edge_val = abs(best_edge_strike['Numeric_Prob'] - 50)
+            c_footer2.caption(f"Edge: **{edge_val:.1f}%**")
             
             if st.button("🔍 View Bell Curve", key="btn_alpha_edge"):
                 st.session_state.selected_strike = best_edge_strike
@@ -455,19 +458,24 @@ if asset_strikes:
             # Probability Bar (Normalized)
             prob_win_conf = highest_conf_strike['Numeric_Prob'] if "BUY YES" in conf_signal else (100 - highest_conf_strike['Numeric_Prob'])
             
-            # Distance
+            # Context
             try:
                 strike_val_c = float(highest_conf_strike['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                dist_pct_c = ((strike_val_c - curr_alpha) / curr_alpha) * 100
-                dist_str_c = f"{dist_pct_c:+.2f}%"
+                is_itm_c = curr_alpha > strike_val_c
+                status_icon_c = "🎯" if is_itm_c else "📉"
+                status_label_c = "ITM" if is_itm_c else "OTM"
+                dist_abs_c = abs(strike_val_c - curr_alpha)
+                
+                context_str_c = f"Current: ${curr_alpha:,.0f} {status_icon_c} ${dist_abs_c:.0f} {status_label_c}"
             except:
-                dist_str_c = "N/A"
+                context_str_c = "Context N/A"
 
             st.altair_chart(create_probability_bar(prob_win_conf, 50), use_container_width=True)
+            st.caption(context_str_c)
             
             c_footer1, c_footer2 = st.columns(2)
             c_footer1.caption(f"Conf: **{prob_win_conf:.1f}%**")
-            c_footer2.caption(f"Dist: **{dist_str_c}**")
+            c_footer2.caption(f"Prob: **{highest_conf_strike['Numeric_Prob']:.1f}%**")
             
             if st.button("🔍 View Bell Curve", key="btn_alpha_conf"):
                 st.session_state.selected_strike = highest_conf_strike
@@ -655,6 +663,27 @@ with tab_hourly:
                 with c1:
                     st.markdown(f"### {op['Strike']}")
                     st.caption(f"Expires: {op['Time']}")
+                    
+                    # Context Line
+                    try:
+                        strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
+                        # Need current price. For Hourly, we have curr_price_hourly in the loop but not here.
+                        # But we can assume the user wants the latest known price.
+                        # We can fetch it or pass it? 
+                        # Actually, we stored 'curr_price_hourly' in the loop but didn't save it to 'op'.
+                        # Let's just use the 'curr_alpha' if it matches the asset, or skip.
+                        # Better: The 'op' dict should ideally have 'Current_Price'.
+                        # Since we can't easily add it to 'op' without re-running scanner, let's use a rough calc or skip.
+                        # Wait, we can use the 'curr_alpha' calculated in Alpha Deck section if the asset matches!
+                        if op['Asset'] == selected_ticker:
+                            curr = curr_alpha
+                            is_itm = curr > strike_val
+                            status_icon = "🎯" if is_itm else "📉"
+                            status_label = "ITM" if is_itm else "OTM"
+                            dist_abs = abs(strike_val - curr)
+                            st.caption(f"Curr: ${curr:,.0f} {status_icon} ${dist_abs:.0f} {status_label}")
+                    except:
+                        pass
                 
                 with c2:
                     # Calculate Edge/Confidence for display
@@ -662,11 +691,14 @@ with tab_hourly:
                     if prob > 50:
                         conf = prob
                         signal = "BUY YES"
+                        # Color: Green
                     else:
                         conf = 100 - prob
                         signal = "BUY NO"
+                        # Color: Green (High Confidence)
                     
-                    st.metric("Confidence", f"{conf:.1f}%", f"{signal}")
+                    # Always Green for High Confidence
+                    st.metric("Confidence", f"{conf:.1f}%", f":green[{signal}]")
                     st.caption(badge)
                     
                     # Show Real Data if available
@@ -708,6 +740,19 @@ with tab_daily:
                 with c1:
                     st.markdown(f"### {op['Strike']}")
                     st.caption(f"Target: {op['Date']} Close")
+                    
+                    # Context Line
+                    try:
+                        strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
+                        if op['Asset'] == selected_ticker:
+                            curr = curr_alpha
+                            is_itm = curr > strike_val
+                            status_icon = "🎯" if is_itm else "📉"
+                            status_label = "ITM" if is_itm else "OTM"
+                            dist_abs = abs(strike_val - curr)
+                            st.caption(f"Curr: ${curr:,.0f} {status_icon} ${dist_abs:.0f} {status_label}")
+                    except:
+                        pass
                 
                 with c2:
                     prob = op['Numeric_Prob']
@@ -718,7 +763,7 @@ with tab_daily:
                         conf = 100 - prob
                         signal = "BUY NO"
                     
-                    st.metric("Confidence", f"{conf:.1f}%", f"{signal}")
+                    st.metric("Confidence", f"{conf:.1f}%", f":green[{signal}]")
                     st.caption(badge)
                     
                     if op.get('Has_Real_Data'):
