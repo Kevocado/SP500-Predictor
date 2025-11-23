@@ -11,14 +11,18 @@ from src.data_loader import fetch_data
 from src.feature_engineering import create_features, prepare_training_data
 from src.model import load_model, predict_next_hour, train_model
 
-st.set_page_config(page_title="SP500 Hourly Predictor", layout="wide")
+st.set_page_config(page_title="Prediction Market Edge Finder", layout="wide")
 
-st.title("📈 S&P 500 Hourly Predictor")
-st.markdown("Predicting the next hour's closing price using intraday data.")
+st.title("🔮 Prediction Market Edge Finder")
+st.markdown("""
+**Hourly Volatility & Probability Engine**
+This tool identifies "mispriced risk" in hourly prediction markets (e.g., Kalshi, ForecastEx). 
+It calculates the probability of price targets for Indices, Crypto, and High-Vol Stocks.
+""")
 
 # Sidebar for controls
 st.sidebar.header("Controls")
-selected_ticker = st.sidebar.selectbox("Select Index", ["SPX", "Nasdaq", "SPY"])
+selected_ticker = st.sidebar.selectbox("Select Asset", ["SPX", "Nasdaq", "SPY", "NVDA", "TSLA", "BTC", "ETH"])
 
 if st.sidebar.button("Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:

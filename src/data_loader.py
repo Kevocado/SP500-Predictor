@@ -19,7 +19,11 @@ def fetch_data(ticker="SPY", period="1mo", interval="1m"):
     ticker_map = {
         "SPX": "^GSPC",
         "Nasdaq": "^NDX",
-        "SPY": "SPY"
+        "SPY": "SPY",
+        "NVDA": "NVDA",
+        "TSLA": "TSLA",
+        "BTC": "BTC-USD",
+        "ETH": "ETH-USD"
     }
     
     # Map ticker if needed
