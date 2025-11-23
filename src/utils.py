@@ -36,7 +36,7 @@ def get_market_status(ticker="SPX"):
             'is_pre_market': False,
             'status_text': "Market is OPEN (24/7)",
             'next_event_text': "Closes Never",
-            'color': "green"
+            'color': "#3b82f6" # Blue for Live
         }
 
     tz = pytz.timezone('US/Eastern')
@@ -50,7 +50,7 @@ def get_market_status(ticker="SPX"):
     current_time = now.time()
     
     status_text = "Market is CLOSED"
-    color = "red"
+    color = "#6b7280" # Grey for Closed
     is_open = False
     is_pre_market = False
     
@@ -58,8 +58,11 @@ def get_market_status(ticker="SPX"):
         if market_open <= current_time < market_close:
             # Regular Market Hours
             is_open = True
+        if market_open <= current_time < market_close:
+            # Regular Market Hours
+            is_open = True
             status_text = "Market is OPEN"
-            color = "green"
+            color = "#3b82f6" # Blue for Live
             
             # Calculate time to close
             close_dt = now.replace(hour=16, minute=0, second=0, microsecond=0)

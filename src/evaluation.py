@@ -73,7 +73,62 @@ def evaluate_model(model, df, ticker="SPY"):
     rmse = np.sqrt(mean_squared_error(y_actual, y_pred))
     accuracy = results['Correct_Dir'].mean()
     
-    metrics = {'MAE': mae, 'RMSE': rmse, 'Directional_Accuracy': accuracy, 'Correct_Count': results['Correct_Dir'].sum(), 'Total_Count': len(results)}
+    # --- Trust Metrics (Brier, Calibration, PnL) ---
+    from sklearn.metrics import brier_score_loss
+    from sklearn.calibration import calibration_curve
+    
+    # 1. Brier Score (Probabilistic Error)
+    # We need probabilities for Direction (Up).
+    # Simple proxy: If Pred > Current, Prob(Up) = 1.0 (Binary). 
+    # For a regressor, we don't have native probs unless we use the Z-score method.
+    # Let's use the Z-score method we use in the app.
+    # Z = (Pred - Current) / RMSE
+    # Prob(Up) = CDF(Z)
+    import scipy.stats as stats
+    
+    # Calculate RMSE dynamically or use the overall RMSE
+    # Using overall RMSE for simplicity
+    z_scores = (results['Predicted'] - results['Price_At_Pred']) / rmse
+    probs_up = stats.norm.cdf(z_scores)
+    
+    # Actual Outcome (1 if Up, 0 if Down)
+    actual_outcomes = (results['Actual'] > results['Price_At_Pred']).astype(int)
+    
+    brier = brier_score_loss(actual_outcomes, probs_up)
+    
+    # 2. Calibration Curve
+    prob_true, prob_pred = calibration_curve(actual_outcomes, probs_up, n_bins=10)
+    
+    # 3. PnL Backtest (Simple Strategy)
+    # Strategy: Bet $100 on "Yes" if Prob > 60%, Bet $100 on "No" if Prob < 40%.
+    # Payout: $100 profit if correct, -$100 loss if wrong. (Simplified binary option)
+    results['Bet'] = 0
+    results['Bet'] = np.where(probs_up > 0.60, 1, results['Bet']) # Bet Up
+    results['Bet'] = np.where(probs_up < 0.40, -1, results['Bet']) # Bet Down
+    
+    results['Outcome'] = 0
+    # If Bet Up (1) and Actual Up (1) -> Win
+    # If Bet Down (-1) and Actual Down (0) -> Win
+    # Else Loss
+    
+    # Map Actual Down to -1 for comparison
+    actual_signed = np.where(actual_outcomes == 1, 1, -1)
+    
+    results['PnL'] = np.where(results['Bet'] == 0, 0, 
+                              np.where(results['Bet'] == actual_signed, 100, -100))
+    
+    results['Cum_PnL'] = results['PnL'].cumsum()
+    
+    metrics = {
+        'MAE': mae, 
+        'RMSE': rmse, 
+        'Directional_Accuracy': accuracy, 
+        'Correct_Count': results['Correct_Dir'].sum(), 
+        'Total_Count': len(results),
+        'Brier_Score': brier,
+        'Calibration_Data': {'prob_true': prob_true, 'prob_pred': prob_pred},
+        'Total_PnL': results['PnL'].sum()
+    }
     
     # Calculate Daily Metrics
     daily_metrics = results.groupby(results.index.date).apply(
@@ -81,7 +136,8 @@ def evaluate_model(model, df, ticker="SPY"):
             'MAE': x['Abs_Error'].mean(),
             'Accuracy': (x['Actual_Dir'] == x['Pred_Dir']).mean(),
             'Correct': (x['Actual_Dir'] == x['Pred_Dir']).sum(),
-            'Total': len(x)
+            'Total': len(x),
+            'Daily_PnL': x['PnL'].sum()
         })
     )
     

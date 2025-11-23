@@ -5,9 +5,12 @@ import plotly.graph_objects as go
 import sys
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
-# Load environment variables immediately
-load_dotenv()
+# Load environment variables with explicit path
+current_dir = Path(__file__).parent
+env_path = current_dir / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # Add src to path so we can import modules
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -28,7 +31,12 @@ It calculates the probability of price targets for Indices, Crypto, and High-Vol
 # Sidebar for controls
 st.sidebar.header("Controls")
 selected_ticker = st.sidebar.selectbox("Select Asset", ["SPX", "Nasdaq", "BTC", "ETH"])
-timeframe_view = st.sidebar.radio("Timeframe", ["Hourly", "Daily"], index=0)
+timeframe_view = st.sidebar.radio(
+    "Timeframe", 
+    ["Hourly", "Daily"], 
+    index=0,
+    help="Hourly: Predicts price 60 mins from now.\nDaily: Predicts closing price at 4:00 PM ET."
+)
 
 if st.sidebar.button("Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
@@ -75,7 +83,7 @@ def check_daily_range(predicted_price, ranges_list):
 # Main content
 st.title(f"📈 {selected_ticker} Hourly Predictor")
 
-tab1, tab2, tab3 = st.tabs(["Live Prediction", "Model Performance", "📜 History (Azure)"])
+tab1, tab2, tab3, tab4 = st.tabs(["⚡ Live Scanner", "🔍 Deep Dive", "📈 Model Performance", "📜 History"])
 
 with tab1:
     # 1. Market Scanner (Top of Page)
@@ -98,11 +106,6 @@ with tab1:
                     continue # Skip closed markets
 
                 # Fetch & Predict
-                # Use Daily model for Scanner if Timeframe is Daily? 
-                # The prompt implies "Daily Range" is a key feature.
-                # Let's stick to the selected timeframe or maybe scan both?
-                # For simplicity, let's respect the global timeframe_view selector
-                
                 if timeframe_view == "Daily":
                     df_scan = fetch_data(ticker=ticker, period="60d", interval="1h")
                     model_scan = load_daily_model(ticker=ticker)
@@ -144,6 +147,11 @@ with tab1:
                     s['Asset'] = ticker
                     s['Date'] = date_str
                     s['Time'] = time_str
+                    # Calculate numeric edge for sorting
+                    # Edge is not explicitly in signal dict, let's add it or parse it
+                    # Signal dict has 'Prob'. Edge = Prob - 50 (roughly) or just use Prob.
+                    # Let's use Prob as the metric for "Alpha"
+                    s['Numeric_Prob'] = float(s['Prob'].strip('%'))
                     all_strikes.append(s)
                     
                 for r in signals['ranges']:
@@ -159,6 +167,30 @@ with tab1:
             
         scanner_progress.empty()
         
+        # --- ALPHA DECK (Top 3 Opportunities) ---
+        if all_strikes:
+            # Sort by Probability (Confidence)
+            top_opps = sorted(all_strikes, key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)[:3]
+            
+            st.markdown("### 🔥 Top Opportunities (Alpha Deck)")
+            c1, c2, c3 = st.columns(3)
+            
+            for i, col in enumerate([c1, c2, c3]):
+                if i < len(top_opps):
+                    opp = top_opps[i]
+                    with col:
+                        st.markdown(f"""
+                        <div style="padding: 15px; border: 1px solid #333; border-radius: 10px; background-color: #0e1117;">
+                            <h3 style="margin:0; color: #3b82f6;">{opp['Asset']}</h3>
+                            <p style="font-size: 1.2em; font-weight: bold; margin: 5px 0;">{opp['Strike']}</p>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="background-color: {'#1b4d1b' if 'YES' in opp['Action'] else '#4d1b1b'}; padding: 2px 8px; border-radius: 4px; font-size: 0.9em;">{opp['Action']}</span>
+                                <span style="font-weight: bold;">{opp['Prob']}</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+            st.markdown("---")
+
         # Display Results in Tabs
         scan_tab1, scan_tab2 = st.tabs(["🎯 Strike Prices (Direction)", "📊 Daily Ranges (Volatility)"])
         
@@ -168,7 +200,17 @@ with tab1:
                 # Reorder columns
                 df_strikes = pd.DataFrame(all_strikes)
                 cols = ['Asset', 'Date', 'Time', 'Strike', 'Prob', 'Action']
-                st.dataframe(df_strikes[cols], use_container_width=True)
+                
+                # Heatmap Styling
+                def highlight_edge(row):
+                    prob = float(row['Prob'].strip('%'))
+                    if prob > 70:
+                        return ['background-color: #1b4d1b'] * len(row) # Strong Green
+                    elif prob < 30:
+                        return ['background-color: #4d1b1b'] * len(row) # Strong Red
+                    return [''] * len(row)
+
+                st.dataframe(df_strikes[cols].style.apply(highlight_edge, axis=1), use_container_width=True)
             else:
                 st.info("No active strike opportunities found.")
                 
@@ -201,9 +243,8 @@ with tab1:
             *   Look for the row highlighted in **Green**. This is the model's predicted target zone.
             *   On Kalshi/Webull, find the "Range" market for that asset and buy the contract that matches these numbers.
         """)
-            
-    st.markdown("---")
 
+with tab2:
     # 2. Deep Dive (Single Asset)
     st.subheader(f"🔍 Deep Dive: {selected_ticker}")
     
@@ -453,41 +494,56 @@ with tab2:
                 results, metrics, daily_metrics = evaluate_model(model, df, ticker=selected_ticker)
             
         if not results.empty:
-            # Metrics Row
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Overall MAE", f"${metrics['MAE']:.2f}", help="Mean Absolute Error: Average dollar error per prediction.")
-            m2.metric("Directional Accuracy", f"{metrics['Directional_Accuracy']:.1%}", help="Percentage of times the model correctly predicted the price direction (Up/Down).")
-            m3.metric("Correct Predictions", f"{metrics['Correct_Count']} / {metrics['Total_Count']}", help="Count of correct direction predictions.")
+            # --- TRUST ENGINE METRICS ---
+            st.markdown("### 🛡️ The Trust Engine")
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Directional Accuracy", f"{metrics['Directional_Accuracy']:.1%}", help="How often the model correctly predicts Up vs Down.")
+            m2.metric("Brier Score", f"{metrics['Brier_Score']:.3f}", help="Probabilistic Error. 0.0 is perfect, 0.25 is random guessing. Lower is better.")
+            m3.metric("Total PnL (Sim)", f"${metrics['Total_PnL']:,.0f}", help="Simulated Profit/Loss if betting $100 on high-confidence signals (>60% or <40%).")
+            m4.metric("MAE", f"${metrics['MAE']:.2f}", help="Average dollar error per prediction.")
+            
+            st.markdown("---")
+            
+            # --- CHARTS ---
+            col_charts1, col_charts2 = st.columns(2)
+            
+            with col_charts1:
+                st.markdown("#### 📈 Cumulative PnL (Backtest)")
+                st.caption("Growth of a $10,000 account betting $100 per trade.")
+                
+                fig_pnl = go.Figure()
+                fig_pnl.add_trace(go.Scatter(x=results.index, y=results['Cum_PnL'], mode='lines', name='PnL', fill='tozeroy', line=dict(color='#3b82f6')))
+                fig_pnl.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig_pnl, use_container_width=True)
+                
+            with col_charts2:
+                st.markdown("#### 🎯 Calibration Curve")
+                st.caption("Does 70% probability actually mean 70% win rate? (Ideal: Diagonal Line)")
+                
+                prob_true = metrics['Calibration_Data']['prob_true']
+                prob_pred = metrics['Calibration_Data']['prob_pred']
+                
+                fig_cal = go.Figure()
+                fig_cal.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', name='Ideal', line=dict(color='grey', dash='dash')))
+                fig_cal.add_trace(go.Scatter(x=prob_pred, y=prob_true, mode='lines+markers', name='Model', line=dict(color='#1b4d1b')))
+                fig_cal.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), xaxis_title="Predicted Probability", yaxis_title="Actual Win Rate")
+                st.plotly_chart(fig_cal, use_container_width=True)
             
             st.markdown("---")
             
             # Daily Performance Tracker
             st.markdown("### 📅 Daily Performance Tracker")
-            st.caption("Breakdown of how accurate the model was for each trading day.")
             
             # Format the daily metrics for display
             daily_display = daily_metrics.copy()
             daily_display.index.name = "Date"
             daily_display['Accuracy'] = daily_display['Accuracy'].apply(lambda x: f"{x:.1%}")
+            daily_display['Daily PnL'] = daily_display['Daily_PnL'].apply(lambda x: f"${x:,.0f}")
             daily_display['MAE'] = daily_display['MAE'].apply(lambda x: f"${x:.2f}")
-            daily_display['Correct / Total'] = daily_display.apply(lambda x: f"{int(x['Correct'])} / {int(x['Total'])}", axis=1)
-            daily_display = daily_display[['Accuracy', 'MAE', 'Correct / Total']].sort_index(ascending=False)
+            daily_display = daily_display[['Accuracy', 'Daily PnL', 'MAE']].sort_index(ascending=False)
             
             st.dataframe(daily_display, use_container_width=True)
-            
-            st.markdown("---")
-            
-            # Graph 1: Actual vs Predicted
-            st.markdown("### 1. Actual vs Predicted (Last 5 Days)")
-            st.caption("This graph compares the **Predicted Close** (orange dashed line) with the **Actual Close** (blue line) that happened 60 minutes later. A perfect model would have the lines overlapping perfectly.")
-            
-            fig_perf = go.Figure()
-            fig_perf.add_trace(go.Scatter(x=results.index, y=results['Actual'], mode='lines', name='Actual Close (T+60)', line=dict(color='#00B4D8', width=2)))
-            fig_perf.add_trace(go.Scatter(x=results.index, y=results['Predicted'], mode='lines', name='Predicted Close', line=dict(color='#FF9F1C', dash='dash', width=2)))
-            
-            fig_perf.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-            fig_perf.update_layout(xaxis_title="Time", yaxis_title="Price", height=500, hovermode="x unified")
-            st.plotly_chart(fig_perf, use_container_width=True)
             
             # Graph 2: Rolling Accuracy
             st.markdown("### 2. Rolling Accuracy (60-min MAE)")
