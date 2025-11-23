@@ -2,45 +2,39 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from .feature_engineering import create_features
+from .model_daily import prepare_daily_data
 
 def evaluate_model(model, df, ticker="SPY"):
     """
     Evaluates the model on the provided historical data.
-    
-    Args:
-        model: Trained LightGBM model.
-        df (pd.DataFrame): Historical data (OHLCV).
-        ticker (str): Ticker symbol.
-        
-    Returns:
-        pd.DataFrame: DataFrame with 'Actual', 'Predicted', 'Error', 'Rolling_MAE'.
-        dict: Overall metrics {'MAE': float, 'RMSE': float}.
+    Supports both Hourly (target_next_hour) and Daily (Target_Close).
     """
-    # Create features
-    # We need to drop NaNs to get valid rows for prediction, but we want to keep the index
-    df_features = create_features(df)
+    # Determine if Daily or Hourly based on interval or columns?
+    # We can try to detect based on the dataframe index frequency or just try both.
+    # But prepare_daily_data needs to be called if it's daily.
     
-    # The target is 'target_next_hour' which is Close shifted by -60.
-    # So at time T, we have features(T) and we predict Close(T+60).
-    # We want to compare Prediction(T) vs Actual(T+60).
+    # Heuristic: If interval is 1h (Daily Model data), use prepare_daily_data.
+    # If interval is 1m (Hourly Model data), use create_features.
+    # We can check the time difference between rows.
     
-    # Drop rows where we don't have a target (the last 60 mins) for evaluation
-    df_eval = df_features.dropna(subset=['target_next_hour'])
+    time_diff = df.index.to_series().diff().median()
+    is_daily_data = time_diff >= pd.Timedelta(hours=1)
+    
+    if is_daily_data:
+        df_features, _ = prepare_daily_data(df)
+        target_col = 'Target_Close'
+        # Drop rows without target
+        df_eval = df_features.dropna(subset=[target_col])
+    else:
+        df_features = create_features(df)
+        target_col = 'target_next_hour'
+        df_eval = df_features.dropna(subset=[target_col])
     
     if df_eval.empty:
-        return pd.DataFrame(), {}
+        return pd.DataFrame(), {}, pd.DataFrame() # Return 3 empty items
     
-    # Load feature names to ensure correct columns
-    import joblib
-    import os
-    # Assuming this is running from src/ or similar, we need to find the model dir
-    # But we can just use the columns from the dataframe if we filter correctly
-    # Better to rely on the model object if possible, or use the same logic as model.py
-    # Let's try to predict using the columns present in df_eval that match numeric types
-    # A safer way is to use the same feature selection logic as training
-    
-    target_col = 'target_next_hour'
-    drop_cols = [target_col, 'cum_vol', 'cum_vol_price']
+    # Feature Selection
+    drop_cols = [target_col, 'cum_vol', 'cum_vol_price', 'Daily_Open', 'Target_Close', 'target_next_hour']
     feature_cols = [c for c in df_eval.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(df_eval[c])]
     
     X = df_eval[feature_cols]
