@@ -3,6 +3,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import sys
 import os
+from dotenv import load_dotenv
+
+# Load environment variables immediately
+load_dotenv()
 
 # Add src to path so we can import modules
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -66,11 +70,74 @@ st.markdown(f"""
 tab1, tab2, tab3 = st.tabs(["Live Prediction", "Model Performance", "📜 History (Azure)"])
 
 with tab1:
-    # 1. Data Fetching & Prediction (Do this first so we have variables for the UI)
-    with st.spinner("Analyzing Market..."):
+    # 1. Market Scanner (Top of Page)
+    st.subheader("🚨 Live Market Scanner")
+    
+    if st.button("Scan All Markets"):
+        scanner_progress = st.progress(0)
+        scan_results = []
+        tickers_to_scan = ["SPX", "Nasdaq", "BTC", "ETH"]
+        
+        for i, ticker in enumerate(tickers_to_scan):
+            try:
+                # Fetch & Predict
+                df_scan = fetch_data(ticker=ticker, period="5d", interval="1m")
+                if df_scan.empty: continue
+                
+                model_scan = load_model(ticker=ticker)
+                if not model_scan: continue
+                
+                df_features_scan = create_features(df_scan)
+                pred_scan = predict_next_hour(model_scan, df_features_scan, ticker=ticker)
+                rmse_scan = get_recent_rmse(model_scan, df_scan, ticker=ticker)
+                curr_price_scan = df_scan['Close'].iloc[-1]
+                
+                # Generate Strikes
+                base_price_scan = round(curr_price_scan / 10) * 10
+                strikes_scan = [base_price_scan + (k * 10) for k in range(-2, 3)]
+                
+                for strike in strikes_scan:
+                    prob = calculate_probability(pred_scan, strike, rmse_scan)
+                    # Sim Market Price
+                    import random
+                    noise = random.uniform(-10, 10)
+                    mkt_price = min(99, max(1, int(prob + noise)))
+                    edge = prob - mkt_price
+                    
+                    action = "PASS"
+                    if prob > 60 and edge > 5: action = "🟢 BUY YES"
+                    elif prob < 40 and edge < -5: action = "🔴 BUY NO"
+                    
+                    if action != "PASS":
+                        scan_results.append({
+                            "Asset": ticker,
+                            "Strike": f"> ${strike}",
+                            "Prob": f"{prob:.1f}%",
+                            "Edge": f"{edge:.1f}%",
+                            "Action": action
+                        })
+            except Exception as e:
+                print(f"Scanner error on {ticker}: {e}")
+            
+            scanner_progress.progress((i + 1) / len(tickers_to_scan))
+            
+        scanner_progress.empty()
+        
+        if scan_results:
+            # Sort by absolute edge strength (descending)
+            # Need to parse edge string back to float for sorting
+            scan_results.sort(key=lambda x: float(x['Edge'].strip('%')), reverse=True)
+            st.success(f"Found {len(scan_results)} opportunities!")
+            st.dataframe(scan_results, use_container_width=True)
+        else:
+            st.info("No high-edge opportunities found right now.")
+            
+    st.markdown("---")
+
+    # 2. Deep Dive (Single Asset)
+    st.subheader(f"🔍 Deep Dive: {selected_ticker}")
+    with st.spinner(f"Analyzing {selected_ticker}..."):
         # Fetch data
-        # Default to 5d for calculation, but we can use the selector for the chart later if needed
-        # Actually, let's keep the selector but maybe move it near the chart or just default to 3d for now
         df = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
         model = load_model(ticker=selected_ticker)
         
@@ -174,7 +241,7 @@ with tab1:
                         action = "⚪ PASS"
                         
                     edge_data.append({
-                        "Date": now_day.strftime("%Y-%m-%d"), # Add Date Column
+                        "Date": now_day.strftime("%b %d"), # Readable Date (e.g. Nov 22)
                         "Time": time_str, 
                         "Strike": f"> ${strike}",
                         "Mkt Price": f"{market_price_cents}¢",
@@ -366,6 +433,10 @@ with tab3:
             st.info(f"No history found for {selected_ticker} yet. Make some predictions!")
     else:
         st.warning("No logs found in Azure. Check your connection string or make some predictions first.")
+        if not os.getenv("AZURE_CONNECTION_STRING"):
+            st.error("⚠️ AZURE_CONNECTION_STRING not found in environment variables. Please check your .env file.")
+        else:
+            st.caption("Connection string is detected. The container might be empty.")
 
 st.markdown("---")
 st.markdown("### Model Info")
