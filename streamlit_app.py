@@ -44,50 +44,7 @@ from src.model import load_model, predict_next_hour, calculate_probability, get_
 from src.azure_logger import log_prediction
 from datetime import timedelta
 
-# ... (rest of imports)
 
-# ... (inside the main logic)
-
-                edge_data = []
-                for strike in strikes:
-                    prob_yes = calculate_probability(prediction, strike, rmse)
-                    
-                    # Simulate Market Price
-                    import random
-                    noise = random.uniform(-10, 10)
-                    market_price_cents = min(99, max(1, int(prob_yes + noise)))
-                    
-                    edge = prob_yes - market_price_cents
-                    
-                    if prob_yes > 60 and edge > 5:
-                        action = "🟢 BUY YES"
-                    elif prob_yes < 40 and edge < -5:
-                        action = "🔴 BUY NO"
-                    else:
-                        action = "⚪ PASS"
-                        
-                    edge_data.append({
-                        "Time": time_str, # Add Time Column
-                        "Strike": f"> ${strike}",
-                        "Mkt Price": f"{market_price_cents}¢",
-                        "Model %": f"{prob_yes:.1f}%",
-                        "Edge": f"{edge:.1f}%",
-                        "Action": action
-                    })
-                
-                st.table(edge_data)
-                
-                # Log to Azure (Async-ish to not block UI too much, though st is sync)
-                # We only log if market is open to avoid spamming logs with closed market data?
-                # User said "Audit Trail", usually implies live trades.
-                # But let's log it anyway or maybe check if we haven't logged recently?
-                # For now, just log every time the app refreshes/predicts.
-                if market_status['is_open']:
-                    log_prediction(prediction, current_price, rmse, edge_data, ticker=selected_ticker)
-                
-                with st.expander("ℹ️ How to read this table"):
-
-# ... (Previous code remains)
 
 # Main content
 st.title(f"📈 {selected_ticker} Hourly Predictor")
