@@ -37,56 +37,42 @@ def get_real_kalshi_markets(ticker):
 
     try:
         # Fetch markets
-        # Note: This is a public endpoint for some data, but usually requires auth.
-        # The user specified: https://api.elections.kalshi.com/trade-api/v2/markets
-        # and to use requests.
-        
-        # We might need to filter by series_ticker in the params or post-process.
-        # Let's try fetching all and filtering, or see if there's a param.
-        # Documentation usually suggests 'series_ticker' or 'ticker' param.
-        # Let's try fetching with a limit or specific query if possible, 
-        # but for now we'll fetch active markets and filter client-side if needed 
-        # or assume the endpoint returns a list we can filter.
-        
-        # Based on typical Kalshi API usage:
         params = {
-            "limit": 100,
-            "status": "open",
-            "series_ticker": series_ticker
+            "limit": 200,
+            "status": "open"
         }
         
-        # If the user provided a specific endpoint, we use it.
-        # Headers might be needed.
-        headers = {
-            "Authorization": f"Bearer {API_KEY}" # Or specific auth header format
-        }
-        # Actually, standard Kalshi API often uses specific auth signatures. 
-        # But if the user gave a specific simple instruction, I will follow that.
-        # User said: "Use requests to hit the endpoint... Load KALSHI_API_KEY...".
-        # I will assume simple Bearer or just params if it's a public-ish endpoint.
-        # Let's try standard requests.get with params.
+        # Add series_ticker if we want to filter (but let's try without first)
+        # params["series_ticker"] = series_ticker
         
-        response = requests.get(KALSHI_API_URL, params=params) #, headers=headers) 
-        # If it requires auth, it usually needs a signature or login. 
-        # However, for "elections.kalshi.com" it might be the public data feed?
-        # Let's stick to the user's instruction: "Load KALSHI_API_KEY... Use requests".
-        # I'll add the key to headers just in case, or maybe it's not needed for public markets?
-        # Let's try without headers first if it's the public endpoint, or with if user implied it.
-        # Given "Load KALSHI_API_KEY", I should probably use it.
-        # But wait, the user said "Load KALSHI_API_KEY... Use requests...". 
-        # I will assume it's needed.
+        headers = {}
+        if API_KEY:
+            headers["Authorization"] = f"Bearer {API_KEY}"
+        
+        print(f"🔍 Fetching Kalshi markets for {ticker} (series: {series_ticker})")
+        print(f"   URL: {KALSHI_API_URL}")
+        print(f"   Has API Key: {bool(API_KEY)}")
+        
+        response = requests.get(KALSHI_API_URL, params=params, headers=headers if API_KEY else None)
+        
+        print(f"   Response Status: {response.status_code}")
         
         if response.status_code != 200:
-            print(f"Error fetching Kalshi data: {response.status_code} - {response.text}")
+            print(f"❌ Error fetching Kalshi data: {response.status_code}")
+            print(f"   Response: {response.text[:200]}")
             return []
             
         data = response.json()
         markets = data.get('markets', [])
         
+        print(f"   Total markets returned: {len(markets)}")
+        
+        # Filter by series_ticker client-side
         results = []
         for m in markets:
-            # Filter by ticker if API didn't do it strictly
-            if series_ticker not in m.get('series_ticker', ''):
+            # Check if this market matches our series
+            market_series = m.get('series_ticker', '')
+            if series_ticker.lower() not in market_series.lower():
                 continue
                 
             # Extract data
@@ -114,10 +100,13 @@ def get_real_kalshi_markets(ticker):
                 'market_id': m.get('ticker') # The specific market ticker, e.g. KXBT-25DEC-100000
             })
             
+        print(f"   Filtered to {len(results)} markets for {series_ticker}")
         return results
 
     except Exception as e:
-        print(f"Exception in Kalshi feed: {e}")
+        print(f"❌ Exception in Kalshi feed: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def check_kalshi_connection():
