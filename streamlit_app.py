@@ -89,78 +89,84 @@ def run_scanner(timeframe_override=None):
     progress_bar = st.progress(0)
     
     for i, ticker in enumerate(tickers_to_scan):
+        # --- 1. DAILY SCAN (End of Day) ---
+        # Run for ALL assets
         try:
-            # Determine Timeframe for this asset
-            # If user forced a timeframe in the UI, maybe we should use that?
-            # But the scanner shows everything. Let's use the "Smart" timeframe for each asset.
-            # OR, if the user selected "Daily" globally, maybe they want Daily for everything?
-            # Let's stick to the "Smart" logic for the scanner to ensure relevance.
+            df_daily = fetch_data(ticker=ticker, period="60d", interval="1h")
+            model_daily = load_daily_model(ticker=ticker)
             
-            # Actually, to keep it simple and consistent with the UI toggle:
-            # We will use the `determine_best_timeframe` for each asset individually.
-            best_tf = determine_best_timeframe(ticker)
-            
-            # Check Status
-            market_status = get_market_status(ticker)
-            if not market_status['is_open'] and best_tf == "Hourly":
-                # If it's closed and we wanted Hourly, we can't really do much unless we switch to Daily.
-                # determine_best_timeframe handles this: if Closed -> Daily.
-                pass
-            
-            # Fetch Data
-            if best_tf == "Daily":
-                df_scan = fetch_data(ticker=ticker, period="60d", interval="1h")
-                model_scan = load_daily_model(ticker=ticker)
-            else:
-                df_scan = fetch_data(ticker=ticker, period="5d", interval="1m")
-                model_scan = load_model(ticker=ticker)
+            if not df_daily.empty and model_daily:
+                df_features_daily, _ = prepare_daily_data(df_daily)
+                pred_daily = predict_daily_close(model_daily, df_features_daily.iloc[[-1]])
+                rmse_daily = df_daily['Close'].iloc[-1] * 0.01 # Approx RMSE
+                curr_price_daily = df_daily['Close'].iloc[-1]
                 
-            if df_scan.empty or not model_scan: continue
-            
-            # Predict
-            if best_tf == "Daily":
-                df_features_scan, _ = prepare_daily_data(df_scan)
-                pred_scan = predict_daily_close(model_scan, df_features_scan.iloc[[-1]])
-                rmse_scan = df_scan['Close'].iloc[-1] * 0.01 # Approx RMSE
-                
-                last_time = df_scan.index[-1]
+                last_time = df_daily.index[-1]
                 target_time = last_time.replace(hour=16, minute=0, second=0, microsecond=0)
                 if last_time.time() >= time(16, 0):
                     target_time += timedelta(days=1)
-            else:
-                df_features_scan = create_features(df_scan)
-                pred_scan = predict_next_hour(model_scan, df_features_scan, ticker=ticker)
-                rmse_scan = get_recent_rmse(model_scan, df_scan, ticker=ticker)
+                    
+                date_str = target_time.strftime("%b %d")
+                time_str = target_time.strftime("%I:%M %p")
                 
-                last_time = df_scan.index[-1]
-                target_time = last_time + timedelta(hours=1)
-            
-            curr_price_scan = df_scan['Close'].iloc[-1]
-            
-            date_str = target_time.strftime("%b %d")
-            time_str = target_time.strftime("%I:%M %p")
-            
-            # Generate Signals
-            signals = generate_trading_signals(ticker, pred_scan, curr_price_scan, rmse_scan)
-            
-            for s in signals['strikes']:
-                s['Asset'] = ticker
-                s['Date'] = date_str
-                s['Time'] = time_str
-                s['Timeframe'] = best_tf # Add this so user knows
-                s['Numeric_Prob'] = float(s['Prob'].strip('%'))
-                s['RMSE'] = rmse_scan # Add RMSE for Reliability Badge
-                all_strikes.append(s)
+                signals_daily = generate_trading_signals(ticker, pred_daily, curr_price_daily, rmse_daily)
                 
-            for r in signals['ranges']:
-                r['Asset'] = ticker
-                r['Date'] = date_str
-                r['Time'] = time_str
-                r['Timeframe'] = best_tf
-                all_ranges.append(r)
+                for s in signals_daily['strikes']:
+                    s['Asset'] = ticker
+                    s['Date'] = date_str
+                    s['Time'] = time_str
+                    s['Timeframe'] = "Daily"
+                    s['Numeric_Prob'] = float(s['Prob'].strip('%'))
+                    s['RMSE'] = rmse_daily
+                    all_strikes.append(s)
+                    
+                # Ranges from Daily? Maybe not needed if Hourly covers it, but let's add if useful.
+                # Usually ranges are better for short term volatility.
                 
         except Exception as e:
-            print(f"Scanner error on {ticker}: {e}")
+            print(f"Daily Scanner error on {ticker}: {e}")
+
+        # --- 2. HOURLY SCAN (Intraday) ---
+        # Run if market is OPEN or it's Crypto (24/7)
+        market_status = get_market_status(ticker)
+        is_crypto = ticker in ["BTC", "ETH"]
+        
+        if market_status['is_open'] or is_crypto:
+            try:
+                df_hourly = fetch_data(ticker=ticker, period="5d", interval="1m")
+                model_hourly = load_model(ticker=ticker)
+                
+                if not df_hourly.empty and model_hourly:
+                    df_features_hourly = create_features(df_hourly)
+                    pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
+                    rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
+                    curr_price_hourly = df_hourly['Close'].iloc[-1]
+                    
+                    last_time = df_hourly.index[-1]
+                    target_time = last_time + timedelta(hours=1)
+                    
+                    date_str = target_time.strftime("%b %d")
+                    time_str = target_time.strftime("%I:%M %p")
+                    
+                    signals_hourly = generate_trading_signals(ticker, pred_hourly, curr_price_hourly, rmse_hourly)
+                    
+                    for s in signals_hourly['strikes']:
+                        s['Asset'] = ticker
+                        s['Date'] = date_str
+                        s['Time'] = time_str
+                        s['Timeframe'] = "Hourly"
+                        s['Numeric_Prob'] = float(s['Prob'].strip('%'))
+                        s['RMSE'] = rmse_hourly
+                        all_strikes.append(s)
+                        
+                    for r in signals_hourly['ranges']:
+                        r['Asset'] = ticker
+                        r['Date'] = date_str
+                        r['Time'] = time_str
+                        r['Timeframe'] = "Hourly"
+                        all_ranges.append(r)
+            except Exception as e:
+                print(f"Hourly Scanner error on {ticker}: {e}")
         
         progress_bar.progress((i + 1) / len(tickers_to_scan))
         
@@ -294,34 +300,40 @@ if asset_strikes:
     except:
         move_pct = 0
     
-    # Display 3 metric cards
+    # Display 3 metric cards using containers for better control
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric(
-            label="💎 Best Edge",
-            value=f"{best_edge_val:.1f}% Confidence",
-            delta=best_edge_strike['Strike'],
-            help=f"Highest confidence opportunity: {best_edge_strike['Action']}"
-        )
+        with st.container(border=True):
+            st.caption("💎 Best Edge")
+            # Action Color
+            action_color = "green" if "BUY YES" in best_edge_strike['Action'] else "red"
+            st.markdown(f"### :{action_color}[{best_edge_strike['Action']}]")
+            st.markdown(f"**{best_edge_strike['Strike']}**")
+            st.divider()
+            st.caption(f"Confidence: **{best_edge_val:.1f}%**")
+            st.caption(f"Edge: **{abs(best_edge_strike['Numeric_Prob'] - 50):.1f}%**")
     
     with col2:
-        st.metric(
-            label="🛡️ Highest Confidence",
-            value=f"{highest_conf_val:.1f}% ({conf_signal})",
-            delta=highest_conf_strike['Strike'],
-            help=f"Most confident prediction: {highest_conf_strike['Action']}"
-        )
+        with st.container(border=True):
+            st.caption("🛡️ Highest Confidence")
+            action_color = "green" if "BUY YES" in conf_signal else "red"
+            st.markdown(f"### :{action_color}[{conf_signal}]")
+            st.markdown(f"**{highest_conf_strike['Strike']}**")
+            st.divider()
+            st.caption(f"Confidence: **{highest_conf_val:.1f}%**")
+            st.caption(f"Model Prob: **{highest_conf_strike['Numeric_Prob']:.1f}%**")
     
     with col3:
-        move_label = "⚡ Predicted Move"
-        move_direction = "↑" if move_pct > 0 else "↓" if move_pct < 0 else "→"
-        st.metric(
-            label=move_label,
-            value=f"{move_direction} {abs(move_pct):.2f}%",
-            delta=f"{internal_timeframe}",
-            help="Expected price movement for next timeframe"
-        )
+        with st.container(border=True):
+            st.caption("⚡ Predicted Move")
+            move_direction = "↑" if move_pct > 0 else "↓" if move_pct < 0 else "→"
+            move_color = "green" if move_pct > 0 else "red" if move_pct < 0 else "gray"
+            st.markdown(f"### :{move_color}[{move_direction} {abs(move_pct):.2f}%]")
+            st.markdown(f"**{internal_timeframe}**")
+            st.divider()
+            st.caption(f"Target: **${pred_alpha:,.2f}**")
+            st.caption(f"Current: **${curr_alpha:,.2f}**")
 else:
     st.info(f"No opportunities found for {selected_ticker}. Try refreshing data.")
 
