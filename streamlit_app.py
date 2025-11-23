@@ -262,6 +262,9 @@ def run_scanner(timeframe_override=None):
 if not st.session_state.scan_results['strikes'] and not st.session_state.scan_results['ranges']:
     run_scanner()
 
+if st.session_state.last_scan_time:
+    st.caption(f"Last Updated: {st.session_state.last_scan_time.strftime('%H:%M:%S')}")
+
 # --- LAYOUT ---
 
 # Title Bar
