@@ -24,7 +24,7 @@ else:
     print("✅ AZURE_CONNECTION_STRING loaded successfully.")
 
 # Add src to path so we can import modules
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+# sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features, prepare_training_data
