@@ -40,7 +40,7 @@ def get_real_kalshi_markets(ticker):
         params = {
             "series_ticker": series_ticker,
             "status": "open",
-            "limit": 200
+            "limit": 300
         }
         
         headers = {}
@@ -111,20 +111,44 @@ def get_real_kalshi_markets(ticker):
         print(f"   📊 Total markets returned: {len(markets)}")
         
         results = []
+        strike_count = 0
+        range_count = 0
+        
         for m in markets:
-            # Extract strike price
-            strike_price = m.get('strike_price')
+            # Kalshi uses floor_strike and cap_strike, NOT strike_price
+            floor = m.get('floor_strike')
+            cap = m.get('cap_strike')
             
-            # If no strike_price field, try parsing from subtitle
-            if not strike_price:
-                subtitle_text = m.get('yes_sub_title') or m.get('subtitle', '')
-                import re
-                numbers = re.findall(r'[\d,]+', subtitle_text.replace('$', ''))
-                if numbers:
-                    try:
-                        strike_price = float(numbers[0].replace(',', ''))
-                    except:
-                        pass
+            # Determine market type:
+            # - If only floor (no cap): "Above X" strike market
+            # - If only cap (no floor): "Below X" strike market  
+            # - If both floor and cap: "Between X and Y" range market
+            
+            is_range = (floor is not None and cap is not None)
+            
+            if is_range:
+                # Range market: "Between X and Y"
+                strike_price = None  # No single strike
+                market_type = 'range'
+                range_count += 1
+            elif floor is not None:
+                # Strike market: "Above X"
+                strike_price = floor
+                market_type = 'above'
+                strike_count += 1
+            elif cap is not None:
+                # Strike market: "Below X"
+                strike_price = cap
+                market_type = 'below'
+                strike_count += 1
+            else:
+                # No floor or cap - skip this market
+                print(f"   ⚠️ Skipping market with no floor or cap: {m.get('ticker')}")
+                continue
+            
+            # Get subtitle for better description
+            yes_subtitle = m.get('yes_sub_title', '')
+            no_subtitle = m.get('no_sub_title', '')
             
             # Bid/Ask
             yes_bid = m.get('yes_bid', 0)
@@ -135,21 +159,26 @@ def get_real_kalshi_markets(ticker):
             results.append({
                 'ticker': ticker,
                 'strike_price': strike_price,
+                'floor_strike': floor,
+                'cap_strike': cap,
+                'market_type': market_type,  # 'above', 'below', or 'range'
                 'yes_bid': yes_bid,
                 'no_bid': no_bid,
                 'yes_ask': yes_ask,
                 'no_ask': no_ask,
                 'expiration': m.get('expiration_time'),
                 'market_id': m.get('ticker'),
-                'title': m.get('title', '')
+                'title': m.get('title', ''),
+                'yes_subtitle': yes_subtitle,
+                'no_subtitle': no_subtitle
             })
             
-        print(f"   ✅ Extracted {len(results)} markets with pricing data")
+        print(f"   ✅ Extracted {len(results)} markets: {strike_count} strike + {range_count} range")
         
         # Additional validation: Check if we got financial markets
         if results:
-            sample_title = results[0].get('title', '')
-            print(f"   Sample market title: {sample_title}")
+            sample = results[0]
+            print(f"   Sample market: {sample.get('market_type')} - {sample.get('yes_subtitle', 'N/A')[:60]}")
         
         return results
 

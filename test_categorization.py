@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test market categorization logic."""
+"""Test market categorization logic with new market_type field."""
 
 import sys
 sys.path.insert(0, 'src')
@@ -10,7 +10,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 def categorize_markets(markets, ticker):
-    """Copy of categorization logic for testing."""
+    """
+    Copy of the UPDATED categorization logic from streamlit_app.py
+    """
     from zoneinfo import ZoneInfo
 
     buckets = {'hourly': [], 'daily': [], 'range': []}
@@ -27,31 +29,40 @@ def categorize_markets(markets, ticker):
             if not exp_str:
                 continue
 
+            # Parse expiration preserving timezone info if present
             exp_time = pd.to_datetime(exp_str)
             if exp_time.tzinfo is None:
+                # assume UTC if no tz provided
                 exp_time = exp_time.replace(tzinfo=ZoneInfo("UTC"))
 
+            # Normalize to NY timezone for date/hour checks
             exp_ny = exp_time.astimezone(ny_tz)
 
-            title = m.get('title', '') or ''
-            t_low = title.lower()
-            if 'range' in t_low or 'between' in t_low:
+            # Range detection - use market_type field from Kalshi API
+            # market_type can be: 'above', 'below', or 'range'
+            market_type = m.get('market_type', '')
+            
+            if market_type == 'range':
                 buckets['range'].append(m)
                 continue
 
+            # Time difference in minutes from now (UTC-based compare)
             time_diff_min = (exp_time - now_utc).total_seconds() / 60.0
             time_diff_hours = time_diff_min / 60.0
             time_diff_days = time_diff_hours / 24.0
 
+            # Hourly: expires within 90 minutes AND (for crypto) inside allowed NY hours
             if 0 < time_diff_min <= 90:
                 if is_crypto:
+                    # Crypto active window: 09:00 - 23:59 NY time
                     if 9 <= now_ny.hour <= 23:
                         buckets['hourly'].append(m)
                 else:
                     buckets['hourly'].append(m)
                 continue
 
-            # NEW: 14 days instead of 7
+            # Daily: expires within 14 days (more flexible to show available markets)
+            # Extended to 14 days to catch markets that expire a week+ out
             if 0 < time_diff_days <= 14:
                 buckets['daily'].append(m)
                 continue
@@ -68,7 +79,7 @@ def categorize_markets(markets, ticker):
     return buckets
 
 # Test each ticker
-for ticker in ['SPX', 'Nasdaq', 'BTC', 'ETH']:
+for ticker in ['SPX', 'BTC', 'ETH']:
     print(f"\n{'='*60}")
     print(f"Testing {ticker}")
     print(f"{'='*60}")
@@ -82,11 +93,13 @@ for ticker in ['SPX', 'Nasdaq', 'BTC', 'ETH']:
     if buckets['daily']:
         print(f"\n  Sample daily market:")
         m = buckets['daily'][0]
+        print(f"    Type: {m.get('market_type')}")
         print(f"    Strike: {m.get('strike_price')}")
-        print(f"    Title: {m.get('title', '')[:60]}")
+        print(f"    Subtitle: {m.get('yes_subtitle', 'N/A')}")
         print(f"    Exp: {m.get('expiration')}")
     
     if buckets['range']:
         print(f"\n  Sample range market:")
         m = buckets['range'][0]
-        print(f"    Title: {m.get('title', '')[:60]}")
+        print(f"    Type: {m.get('market_type')}")
+        print(f"    Subtitle: {m.get('yes_subtitle', 'N/A')}")

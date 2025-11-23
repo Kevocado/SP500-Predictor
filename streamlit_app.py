@@ -16,6 +16,7 @@ from scipy import stats
 import altair as alt
 import sys
 from datetime import timedelta, time, datetime
+from zoneinfo import ZoneInfo
 
 # Hybrid Loading: .env (Local/Backend) vs st.secrets (Streamlit Cloud)
 # If AZURE_CONNECTION_STRING is missing (e.g., on Cloud where .env is gitignored),
@@ -212,10 +213,11 @@ def categorize_markets(markets, ticker):
             # Normalize to NY timezone for date/hour checks
             exp_ny = exp_time.astimezone(ny_tz)
 
-            # Range detection
-            title = m.get('title', '') or ''
-            t_low = title.lower()
-            if 'range' in t_low or 'between' in t_low:
+            # Range detection - use market_type field from Kalshi API
+            # market_type can be: 'above', 'below', or 'range'
+            market_type = m.get('market_type', '')
+            
+            if market_type == 'range':
                 buckets['range'].append(m)
                 continue
 
@@ -362,7 +364,8 @@ def run_scanner(timeframe_override=None):
                     }
                     
                     # Calculate Edge
-                    cost = s['Real_Yes_Bid'] if "BUY YES" in action else s['Real_No_Bid']
+                    # CRITICAL FIX: Cost to Enter = ASK Price (You Buy at Ask)
+                    cost = s['Real_Yes_Ask'] if "BUY YES" in action else s['Real_No_Ask']
                     s['Real_Edge'] = conf - cost
                     
                     all_strikes.append(s)
@@ -403,24 +406,94 @@ def run_scanner(timeframe_override=None):
                         'Has_Real_Data': True
                     }
                     
-                    cost = s['Real_Yes_Bid'] if "BUY YES" in action else s['Real_No_Bid']
+                    # CRITICAL FIX: Cost to Enter = ASK Price (You Buy at Ask)
+                    cost = s['Real_Yes_Ask'] if "BUY YES" in action else s['Real_No_Ask']
                     s['Real_Edge'] = conf - cost
                     
                     all_strikes.append(s)
             
-            # 5. Process Range Bucket (Simplified)
+            # 5. Process Range Bucket (Advanced)
+            # Filter by Edge > 5% and Proximity +/- 2%
             for m in buckets['range']:
-                # Just add them for display, maybe without prediction for now or simple logic
-                r = {
-                    'Asset': ticker,
-                    'Range': m.get('title'),
-                    'Predicted In Range?': "N/A", # Need range model
-                    'Action': "Watch",
-                    'Timeframe': "Hourly", # Usually ranges are hourly/daily
-                    'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
-                    'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p")
-                }
-                all_ranges.append(r)
+                try:
+                    # Determine timeframe and model to use
+                    exp_time = pd.to_datetime(m['expiration'])
+                    if exp_time.tzinfo is None:
+                        exp_time = exp_time.replace(tzinfo=ZoneInfo("UTC"))
+                    
+                    now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
+                    time_diff_min = (exp_time - now_utc).total_seconds() / 60.0
+                    
+                    # Select Model & Data
+                    if time_diff_min <= 90 and model_hourly and not df_hourly.empty:
+                        pred = pred_hourly
+                        rmse = rmse_hourly
+                        curr_price = df_hourly['Close'].iloc[-1]
+                        timeframe = "Hourly"
+                    elif model_daily and not df_daily.empty:
+                        pred = pred_daily
+                        rmse = rmse_daily
+                        curr_price = df_daily['Close'].iloc[-1]
+                        timeframe = "Daily"
+                    else:
+                        continue # No model available
+                        
+                    # Get Range Bounds
+                    lower = m.get('floor_strike')
+                    upper = m.get('cap_strike')
+                    
+                    if lower is None or upper is None:
+                        continue
+                        
+                    # 1. Filter by Proximity (+/- 2%)
+                    mid_point = (lower + upper) / 2
+                    pct_diff = abs(mid_point - curr_price) / curr_price
+                    if pct_diff > 0.02:
+                        continue # Skip if too far from current price
+                        
+                    # 2. Calculate Probability (CDF Logic)
+                    # Prob(Lower < Price < Upper) = Prob(Price > Lower) - Prob(Price > Upper)
+                    prob_lower = calculate_probability(pred, lower, rmse)
+                    prob_upper = calculate_probability(pred, upper, rmse)
+                    prob_in_range = prob_lower - prob_upper
+                    
+                    # Clip to valid range (0-100)
+                    prob_in_range = max(0.0, min(100.0, prob_in_range))
+                    
+                    # 3. Calculate Edge
+                    # Cost is Yes Ask
+                    cost = m.get('yes_ask', 100) # Default to 100 if no ask (avoids showing infinite edge)
+                    if cost == 0: cost = 99 # Avoid zero cost edge cases
+                    
+                    edge = prob_in_range - cost
+                    
+                    # 4. Filter by Edge (> 5%)
+                    if edge < 5:
+                        continue
+                        
+                    # Add to results
+                    r = {
+                        'Asset': ticker,
+                        'Range': f"${lower:,.0f} - ${upper:,.0f}",
+                        'Prob': f"{prob_in_range:.1f}%",
+                        'Numeric_Prob': prob_in_range,
+                        'Cost': cost,
+                        'Edge': edge,
+                        'Action': "BUY YES",
+                        'Timeframe': timeframe,
+                        'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
+                        'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p"),
+                        'Real_Yes_Ask': cost,
+                        'Real_Yes_Bid': m.get('yes_bid', 0),
+                        'Real_No_Ask': m.get('no_ask', 0),
+                        'Real_No_Bid': m.get('no_bid', 0),
+                        'Has_Real_Data': True
+                    }
+                    all_ranges.append(r)
+                    
+                except Exception as e:
+                    # print(f"Error processing range {m.get('ticker')}: {e}")
+                    continue
 
         except Exception as e:
             print(f"Scanner error on {ticker}: {e}")
