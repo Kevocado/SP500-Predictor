@@ -17,15 +17,15 @@ API_KEY = os.getenv("KALSHI_API_KEY")
 def get_real_kalshi_markets(ticker):
     """
     Fetches active markets from Kalshi for the given ticker.
-    Returns a list of dictionaries with market data.
+    Returns a tuple: (list of market dicts, fetch_method_string)
     """
     if not API_KEY:
         print("ℹ️ KALSHI_API_KEY not found. Attempting public data fetch...")
     
     # Map our tickers to Kalshi's actual series tickers
     ticker_map = {
-        "BTC": "KXBTC",           # Bitcoin (base series catches all expirations)
-        "ETH": "KXETH",           # Ethereum (base series catches all expirations)
+        "BTC": "KXBTC",           # Bitcoin
+        "ETH": "KXETH",           # Ethereum
         "SPX": "KXINX",           # S&P 500
         "Nasdaq": "KXNASDAQ100"   # Nasdaq-100
     }
@@ -33,166 +33,122 @@ def get_real_kalshi_markets(ticker):
     series_ticker = ticker_map.get(ticker)
     if not series_ticker:
         print(f"⚠️ No Kalshi series mapping for {ticker}")
-        return []
+        return [], "Error: No Mapping"
 
+    headers = {}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+    # --- STEP A: Targeted Fetch (Precise) ---
     try:
-        # Server-side filtering with params
-        params = {
+        print(f"🔍 [Step A] Targeted Fetch for {ticker} (Series: {series_ticker})...")
+        params_targeted = {
             "series_ticker": series_ticker,
             "status": "open",
-            "limit": 300
+            "limit": 500
         }
         
-        headers = {}
-        if API_KEY:
-            headers["Authorization"] = f"Bearer {API_KEY}"
-        
-        print(f"🔍 Fetching Kalshi markets for {ticker} (series: {series_ticker})")
-        print(f"   URL: {KALSHI_API_URL}")
-        print(f"   Params: {params}")
-        print(f"   Has API Key: {bool(API_KEY)}")
-        
-        # Add timeout to prevent hanging
         response = requests.get(
             KALSHI_API_URL, 
-            params=params, 
+            params=params_targeted, 
             headers=headers if API_KEY else None,
-            timeout=10  # 10 second timeout
+            timeout=10
         )
         
-        print(f"   Response Status: {response.status_code}")
-        
-        markets = []
         if response.status_code == 200:
             data = response.json()
             markets = data.get('markets', [])
-            print(f"   ✅ Primary fetch returned {len(markets)} markets")
+            if markets:
+                print(f"   ✅ Targeted fetch success: {len(markets)} markets found.")
+                return process_markets(markets, ticker), "Targeted"
+            else:
+                print("   ⚠️ Targeted fetch returned 0 markets. Proceeding to fallback...")
         else:
-            print(f"   ❌ Primary fetch failed: {response.status_code}")
-            print(f"   Response: {response.text[:300]}")
-        
-        # Fallback Logic: If no markets found with series filter, try broad fetch
-        if not markets:
-            print(f"⚠️ No markets found for series {series_ticker}. Attempting fallback fetch...")
-            fallback_params = {
-                "limit": 100,
-                "status": "open"
-            }
-            fb_response = requests.get(
-                KALSHI_API_URL, 
-                params=fallback_params, 
-                headers=headers if API_KEY else None,
-                timeout=10
-            )
-            
-            if fb_response.status_code == 200:
-                fb_data = fb_response.json()
-                all_markets = fb_data.get('markets', [])
-                
-                print(f"   Fallback: Got {len(all_markets)} total markets")
-                
-                # Filter manually by checking if the series_ticker is in the market's ticker string
-                # e.g. "KXBTC" in "KXBTC-23NOV25-..."
-                markets = [m for m in all_markets if series_ticker in m.get('ticker', '')]
-                
-                # Double check: if list is empty, try the raw ticker symbol (e.g. "BTC")
-                if not markets:
-                     markets = [m for m in all_markets if ticker in m.get('ticker', '')]
-                
-                print(f"   ✅ Fallback found {len(markets)} markets for {ticker} (using series {series_ticker})")
-                
-                # Debug: Show first market ticker if available
-                if markets:
-                    print(f"   Example ticker: {markets[0].get('ticker', 'N/A')}")
-            else:
-                print(f"   ❌ Fallback fetch failed: {fb_response.status_code}")
-                print(f"   Response: {fb_response.text[:300]}")
+            print(f"   ❌ Targeted fetch failed: {response.status_code}")
 
-        print(f"   📊 Total markets returned: {len(markets)}")
-        
-        results = []
-        strike_count = 0
-        range_count = 0
-        
-        for m in markets:
-            # Kalshi uses floor_strike and cap_strike, NOT strike_price
-            floor = m.get('floor_strike')
-            cap = m.get('cap_strike')
-            
-            # Determine market type:
-            # - If only floor (no cap): "Above X" strike market
-            # - If only cap (no floor): "Below X" strike market  
-            # - If both floor and cap: "Between X and Y" range market
-            
-            is_range = (floor is not None and cap is not None)
-            
-            if is_range:
-                # Range market: "Between X and Y"
-                strike_price = None  # No single strike
-                market_type = 'range'
-                range_count += 1
-            elif floor is not None:
-                # Strike market: "Above X"
-                strike_price = floor
-                market_type = 'above'
-                strike_count += 1
-            elif cap is not None:
-                # Strike market: "Below X"
-                strike_price = cap
-                market_type = 'below'
-                strike_count += 1
-            else:
-                # No floor or cap - skip this market
-                print(f"   ⚠️ Skipping market with no floor or cap: {m.get('ticker')}")
-                continue
-            
-            # Get subtitle for better description
-            yes_subtitle = m.get('yes_sub_title', '')
-            no_subtitle = m.get('no_sub_title', '')
-            
-            # Bid/Ask
-            yes_bid = m.get('yes_bid', 0)
-            no_bid = m.get('no_bid', 0)
-            yes_ask = m.get('yes_ask', 0)
-            no_ask = m.get('no_ask', 0)
-            
-            results.append({
-                'ticker': ticker,
-                'strike_price': strike_price,
-                'floor_strike': floor,
-                'cap_strike': cap,
-                'market_type': market_type,  # 'above', 'below', or 'range'
-                'yes_bid': yes_bid,
-                'no_bid': no_bid,
-                'yes_ask': yes_ask,
-                'no_ask': no_ask,
-                'expiration': m.get('expiration_time'),
-                'market_id': m.get('ticker'),
-                'title': m.get('title', ''),
-                'yes_subtitle': yes_subtitle,
-                'no_subtitle': no_subtitle
-            })
-            
-        print(f"   ✅ Extracted {len(results)} markets: {strike_count} strike + {range_count} range")
-        
-        # Additional validation: Check if we got financial markets
-        if results:
-            sample = results[0]
-            print(f"   Sample market: {sample.get('market_type')} - {sample.get('yes_subtitle', 'N/A')[:60]}")
-        
-        return results
-
-    except requests.exceptions.Timeout:
-        print(f"❌ Timeout fetching Kalshi markets for {ticker}")
-        return []
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Request error in Kalshi feed for {ticker}: {e}")
-        return []
     except Exception as e:
-        print(f"❌ Exception in Kalshi feed: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
+        print(f"   ❌ Targeted fetch error: {e}")
+
+    # --- STEP B: Fallback Fetch (Broad) ---
+    try:
+        print(f"🔍 [Step B] Fallback Fetch (Broad Search) for {ticker}...")
+        params_fallback = {
+            "limit": 1000,
+            "status": "open"
+        }
+        
+        fb_response = requests.get(
+            KALSHI_API_URL, 
+            params=params_fallback, 
+            headers=headers if API_KEY else None,
+            timeout=15
+        )
+        
+        if fb_response.status_code == 200:
+            fb_data = fb_response.json()
+            all_markets = fb_data.get('markets', [])
+            print(f"   Broad fetch got {len(all_markets)} total markets. Filtering client-side...")
+            
+            # Client-Side Filter: Keep if ticker symbol is in the market ticker string
+            # e.g. "KXBTC" in "KXBTC-23NOV..." OR "BTC" in "KXBTC..."
+            filtered_markets = []
+            for m in all_markets:
+                m_ticker = m.get('ticker', '')
+                if series_ticker in m_ticker or ticker in m_ticker:
+                    filtered_markets.append(m)
+            
+            if filtered_markets:
+                print(f"   ✅ Fallback success: {len(filtered_markets)} markets matched.")
+                return process_markets(filtered_markets, ticker), "Fallback (Broad)"
+            else:
+                print("   ❌ Fallback found 0 matching markets.")
+                return [], "Failed (0 Found)"
+        else:
+            print(f"   ❌ Fallback fetch failed: {fb_response.status_code}")
+            return [], "Failed (API Error)"
+
+    except Exception as e:
+        print(f"   ❌ Fallback fetch error: {e}")
+        return [], "Failed (Exception)"
+
+def process_markets(markets, ticker):
+    """Helper to process raw market data into our format."""
+    results = []
+    for m in markets:
+        floor = m.get('floor_strike')
+        cap = m.get('cap_strike')
+        
+        is_range = (floor is not None and cap is not None)
+        
+        if is_range:
+            strike_price = None
+            market_type = 'range'
+        elif floor is not None:
+            strike_price = floor
+            market_type = 'above'
+        elif cap is not None:
+            strike_price = cap
+            market_type = 'below'
+        else:
+            continue
+        
+        results.append({
+            'ticker': ticker,
+            'strike_price': strike_price,
+            'floor_strike': floor,
+            'cap_strike': cap,
+            'market_type': market_type,
+            'yes_bid': m.get('yes_bid', 0),
+            'no_bid': m.get('no_bid', 0),
+            'yes_ask': m.get('yes_ask', 0),
+            'no_ask': m.get('no_ask', 0),
+            'expiration': m.get('expiration_time'),
+            'market_id': m.get('ticker'),
+            'title': m.get('title', ''),
+            'yes_subtitle': m.get('yes_sub_title', ''),
+            'no_subtitle': m.get('no_sub_title', '')
+        })
+    return results
 
 def check_kalshi_connection():
     """

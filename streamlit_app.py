@@ -269,7 +269,13 @@ def run_scanner(timeframe_override=None):
     for i, ticker in enumerate(tickers_to_scan):
         try:
             # 1. Fetch ALL Kalshi Markets first
-            real_markets = get_real_kalshi_markets(ticker)
+            real_markets, fetch_method = get_real_kalshi_markets(ticker)
+            
+            # Store fetch method for Dev Tools
+            if 'fetch_methods' not in st.session_state:
+                st.session_state.fetch_methods = {}
+            st.session_state.fetch_methods[ticker] = fetch_method
+            
             buckets = categorize_markets(real_markets, ticker)
             
             # 2. Load Models with Auto-Retrain Logic
@@ -713,8 +719,12 @@ with st.sidebar.expander("🔧 Dev Tools"):
     st.markdown("---")
     
     for ticker in ["SPX", "Nasdaq", "BTC", "ETH"]:
-        markets = get_real_kalshi_markets(ticker)
-        st.markdown(f"**{ticker}:** {len(markets)} markets")
+        # Use the stored fetch method if available
+        method = st.session_state.get('fetch_methods', {}).get(ticker, "Unknown")
+        markets, _ = get_real_kalshi_markets(ticker) # Re-fetch for debug view or just use what we have? 
+        # Actually, let's just show the stored method and count.
+        
+        st.markdown(f"**{ticker}:** {len(markets)} markets | Method: `{method}`")
         if markets:
             for m in markets[:2]:
                 st.caption(f"Strike: {m.get('strike_price')} | Yes: {m.get('yes_bid')}¢")
