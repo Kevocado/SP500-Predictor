@@ -232,7 +232,6 @@ with tab1:
     all_ranges = st.session_state.scan_results['ranges']
     
     if all_strikes:
-    if all_strikes:
         # Sort by Probability (Confidence)
         # We want the highest CONFIDENCE. 
         # Confidence = abs(Prob - 50). 99% is high confidence, 1% is high confidence (that it won't happen).
