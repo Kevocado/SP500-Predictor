@@ -50,6 +50,7 @@ if st.sidebar.button("Retrain Model"):
 from src.evaluation import evaluate_model
 from src.utils import get_market_status
 from src.model import load_model, predict_next_hour, calculate_probability, get_recent_rmse
+from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
 from src.azure_logger import log_prediction, fetch_all_logs
 from datetime import timedelta
 
@@ -164,8 +165,14 @@ with tab1:
 
     with st.spinner(f"Analyzing {selected_ticker}..."):
         # Fetch data
-        df = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
-        model = load_model(ticker=selected_ticker)
+        # For Daily model, we need hourly data (1h)
+        # For Hourly model, we need minute data (1m)
+        if timeframe_view == "Daily":
+            df = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
+            model = load_daily_model(ticker=selected_ticker)
+        else:
+            df = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
+            model = load_model(ticker=selected_ticker)
         
     if df.empty:
         st.error("Could not load market data.")
@@ -174,25 +181,42 @@ with tab1:
     else:
         # Prepare features & Predict
         try:
-            # Always calculate prediction so we can show the Edge Finder (Strikes)
-            df_features = create_features(df)
-            prediction = predict_next_hour(model, df_features, ticker=selected_ticker)
-            current_price = df['Close'].iloc[-1]
-            rmse = get_recent_rmse(model, df, ticker=selected_ticker)
-            
-            # Time calculations
-            last_time = df.index[-1]
-            
             if timeframe_view == "Daily":
-                # Target 4 PM ET Today (or Tomorrow if past 4 PM)
+                # Daily Model Logic
+                df_features, _ = prepare_daily_data(df)
+                # Use the last row for prediction
+                last_row = df_features.iloc[[-1]]
+                prediction = predict_daily_close(model, last_row)
+                current_price = df['Close'].iloc[-1]
+                # RMSE for daily model (approximate from test set or just hardcode a safe buffer for now)
+                # Ideally we'd calculate this dynamically like get_recent_rmse
+                rmse = current_price * 0.01 # 1% volatility assumption for now
+                
+                # Time calculations
+                last_time = df.index[-1]
+                # Target is 4 PM of the same day (or next trading day if past close)
+                # Logic handled in prepare_daily_data implicitly by target, but for display:
                 target_time = last_time.replace(hour=16, minute=0, second=0, microsecond=0)
                 if last_time.time() >= time(16, 0):
                     target_time += timedelta(days=1)
                 time_str = "4:00 PM (Close)"
+                
             else:
-                # Hourly
+                # Hourly Model Logic
+                df_features = create_features(df)
+                prediction = predict_next_hour(model, df_features, ticker=selected_ticker)
+                current_price = df['Close'].iloc[-1]
+                rmse = get_recent_rmse(model, df, ticker=selected_ticker)
+                
+                # Time calculations
+                last_time = df.index[-1]
                 target_time = last_time + timedelta(hours=1)
                 time_str = target_time.strftime("%I:%M %p")
+            
+            now_day = last_time.date()
+            target_day = target_time.date()
+            day_str = "Today" if now_day == target_day else target_time.strftime("%A")
+            target_time_display = f"{time_str} {day_str}"
                 
             now_day = last_time.date()
             target_day = target_time.date()
