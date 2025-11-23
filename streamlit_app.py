@@ -409,6 +409,7 @@ def run_scanner(timeframe_override=None):
                     # CRITICAL FIX: Cost to Enter = ASK Price (You Buy at Ask)
                     cost = s['Real_Yes_Ask'] if "BUY YES" in action else s['Real_No_Ask']
                     s['Real_Edge'] = conf - cost
+                    print(f"DEBUG: {ticker} {strike} | Action: {action} | Conf: {conf:.2f} | Cost: {cost} | Edge: {s['Real_Edge']:.2f}")
                     
                     all_strikes.append(s)
             
@@ -487,7 +488,8 @@ def run_scanner(timeframe_override=None):
                         'Real_Yes_Bid': m.get('yes_bid', 0),
                         'Real_No_Ask': m.get('no_ask', 0),
                         'Real_No_Bid': m.get('no_bid', 0),
-                        'Has_Real_Data': True
+                        'Has_Real_Data': True,
+                        'Predicted In Range?': f"{prob_in_range:.1f}%" # Added for display compatibility
                     }
                     all_ranges.append(r)
                     
@@ -835,9 +837,9 @@ with tab_hourly:
                     else:
                         profit_text = "—"
                         profit_color = "grey"
-                        pnl_help = "No liquidity to calculate PnL."
+                        pnl_help = "No liquidity to calculate P&L."
                     
-                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**", help=pnl_help)
+                    st.markdown(f"**P&L: :{profit_color}[{profit_text}]**", help=pnl_help)
                     
                     # Model Value
                     model_val = int(conf) # roughly cents
@@ -956,9 +958,9 @@ with tab_daily:
                     else:
                         profit_text = "—"
                         profit_color = "grey"
-                        pnl_help = "No liquidity to calculate PnL."
+                        pnl_help = "No liquidity to calculate P&L."
                     
-                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**", help=pnl_help)
+                    st.markdown(f"**P&L: :{profit_color}[{profit_text}]**", help=pnl_help)
                     
                     # Model Value
                     model_val = int(conf)
@@ -988,7 +990,7 @@ with tab_ranges:
                 c1, c2 = st.columns([3, 1])
                 with c1:
                     st.markdown(f"### {r['Range']}")
-                    st.write(f"Predicted In Range: **{r['Predicted In Range?']}**")
+                    st.write(f"Predicted In Range: **{r.get('Predicted In Range?', 'N/A')}**")
                 with c2:
                     st.caption(f"Action: {r['Action']}")
     else:
