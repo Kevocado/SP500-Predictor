@@ -41,6 +41,7 @@ from src.feature_engineering import create_features, prepare_training_data
 from src.model import load_model, predict_next_hour, train_model, calculate_probability, get_recent_rmse
 from src.evaluation import evaluate_model
 from src.utils import get_market_status, determine_best_timeframe
+from src.kalshi_feed import get_real_kalshi_markets
 from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
 from src.signals import generate_trading_signals
 
@@ -146,18 +147,62 @@ def run_scanner(timeframe_override=None):
                     
                 date_str = target_time.strftime("%b %d")
                 time_str = target_time.strftime("%I:%M %p")
-                
+                # Generate Signals (Simulated for now, but we will overlay Kalshi data if available)
                 signals_daily = generate_trading_signals(ticker, pred_daily, curr_price_daily, rmse_daily)
+            
+                # --- KALSHI OVERLAY ---
+                # Fetch real markets
+                real_markets = get_real_kalshi_markets(ticker)
+                # Create a lookup for real prices: {strike_price: {'yes': ..., 'no': ...}}
+                # Note: Strike matching might be tricky due to float precision or exact values.
+                # We'll try to find the closest match or exact match.
+                real_market_map = {}
+                for rm in real_markets:
+                    if rm.get('strike_price'):
+                        real_market_map[float(rm['strike_price'])] = rm
                 
                 for s in signals_daily['strikes']:
                     s['Asset'] = ticker
                     s['Date'] = date_str
                     s['Time'] = time_str
-                    s['Timeframe'] = "Daily"
+                    s['Timeframe'] = "Daily" 
                     s['Numeric_Prob'] = float(s['Prob'].strip('%'))
                     s['RMSE'] = rmse_daily
-                    all_strikes.append(s)
                     
+                    # Overlay Real Data if found
+                    # s['Strike'] is a string like "> $5,920". Need to parse number.
+                    try:
+                        strike_val = float(s['Strike'].replace('>','').replace('<','').replace('$','').replace(',','').strip())
+                        # Find match in real_market_map (exact or very close)
+                        # For now, simple exact match or closest?
+                        # Let's just check if it exists directly first.
+                        if strike_val in real_market_map:
+                            rm = real_market_map[strike_val]
+                            s['Real_Yes_Bid'] = rm['yes_bid']
+                            s['Real_No_Bid'] = rm['no_bid']
+                            # Recalculate Edge based on Real Price?
+                            # If Action is BUY YES: Edge = Model_Prob - Yes_Bid
+                            # If Action is BUY NO: Edge = (100 - Model_Prob) - No_Bid (Wait, No_Bid is cost to buy No)
+                            # Actually: Edge = Model_Prob_of_Winning - Cost_of_Bet
+                            
+                            model_prob_win = s['Numeric_Prob'] if "BUY YES" in s['Action'] else (100 - s['Numeric_Prob'])
+                            cost = rm['yes_bid'] if "BUY YES" in s['Action'] else rm['no_bid']
+                            
+                            # If cost is in cents (1-99), convert to % (0.01-0.99) or keep as is?
+                            # Model prob is 0-100. Cost is usually 1-99 cents.
+                            # So Edge = Model_Prob - Cost.
+                            if cost > 0:
+                                s['Real_Edge'] = model_prob_win - cost
+                                s['Has_Real_Data'] = True
+                            else:
+                                s['Has_Real_Data'] = False
+                        else:
+                            s['Has_Real_Data'] = False
+                    except:
+                        s['Has_Real_Data'] = False
+                    
+                    all_strikes.append(s)
+                        
                 # Ranges from Daily? Maybe not needed if Hourly covers it, but let's add if useful.
                 # Usually ranges are better for short term volatility.
                 
@@ -350,15 +395,41 @@ if asset_strikes:
             st.markdown(f"### :{action_color}[{best_edge_strike['Action']}]")
             st.markdown(f"**{best_edge_strike['Strike']}**")
             
-            # Probability Bar
-            # Assuming Market Prob is ~50% for ATM, but ideally we'd know the option price.
-            # For now, use 50% as the "Breakeven" anchor or just visualize the Model Prob.
-            # User asked for: "Marker at Market Price". We don't have live option prices, so 50% is a fair proxy for "Unknown".
-            st.altair_chart(create_probability_bar(best_edge_strike['Numeric_Prob'], 50), use_container_width=True)
+            # Probability Bar (Normalized)
+            # Logic: Bar Value = Probability of WINNING the recommended bet.
+            # If BUY YES -> Model Prob.
+            # If BUY NO -> 100 - Model Prob.
+            # Color is always GREEN because it's a "Good Bet" (High Confidence).
+            
+            prob_win = best_edge_strike['Numeric_Prob'] if "BUY YES" in best_edge_strike['Action'] else (100 - best_edge_strike['Numeric_Prob'])
+            
+            # Distance Metric
+            # Calculate % Distance from Current Price
+            try:
+                strike_val = float(best_edge_strike['Strike'].replace('>','').replace('$','').replace(',','').strip())
+                # Need current price. We have curr_alpha if selected_ticker matches, but best_edge might be different asset?
+                # Actually best_edge_strike is from 'asset_strikes' which is filtered by 'selected_ticker'.
+                # So we can use curr_alpha (calculated above) or fetch it.
+                # Let's rely on the fact that we calculated curr_alpha for the "Predicted Move" card which uses selected_ticker.
+                # Wait, 'asset_strikes' is defined as: [s for s in all_strikes if s['Asset'] == selected_ticker]
+                # So yes, it matches.
+                
+                dist_pct = ((strike_val - curr_alpha) / curr_alpha) * 100
+                dist_label = "OTM" if (("BUY YES" in best_edge_strike['Action'] and strike_val > curr_alpha) or ("BUY NO" in best_edge_strike['Action'] and strike_val < curr_alpha)) else "ITM"
+                # Actually OTM/ITM depends on Call/Put logic. 
+                # For "Price > Strike" (Binary Call):
+                # If Price < Strike -> OTM (Prob < 50 usually).
+                # If Price > Strike -> ITM (Prob > 50 usually).
+                # Let's just show the raw distance and let user judge, or simple "X% Away".
+                dist_str = f"{dist_pct:+.2f}%"
+            except:
+                dist_str = "N/A"
+
+            st.altair_chart(create_probability_bar(prob_win, 50), use_container_width=True)
             
             c_footer1, c_footer2 = st.columns(2)
-            c_footer1.caption(f"Conf: **{best_edge_val:.1f}%**")
-            c_footer2.caption(f"Edge: **{abs(best_edge_strike['Numeric_Prob'] - 50):.1f}%**")
+            c_footer1.caption(f"Conf: **{prob_win:.1f}%**")
+            c_footer2.caption(f"Dist: **{dist_str}**")
             
             if st.button("🔍 View Bell Curve", key="btn_alpha_edge"):
                 st.session_state.selected_strike = best_edge_strike
@@ -371,11 +442,22 @@ if asset_strikes:
             st.markdown(f"### :{action_color}[{conf_signal}]")
             st.markdown(f"**{highest_conf_strike['Strike']}**")
             
-            st.altair_chart(create_probability_bar(highest_conf_strike['Numeric_Prob'], 50), use_container_width=True)
+            # Probability Bar (Normalized)
+            prob_win_conf = highest_conf_strike['Numeric_Prob'] if "BUY YES" in conf_signal else (100 - highest_conf_strike['Numeric_Prob'])
+            
+            # Distance
+            try:
+                strike_val_c = float(highest_conf_strike['Strike'].replace('>','').replace('$','').replace(',','').strip())
+                dist_pct_c = ((strike_val_c - curr_alpha) / curr_alpha) * 100
+                dist_str_c = f"{dist_pct_c:+.2f}%"
+            except:
+                dist_str_c = "N/A"
+
+            st.altair_chart(create_probability_bar(prob_win_conf, 50), use_container_width=True)
             
             c_footer1, c_footer2 = st.columns(2)
-            c_footer1.caption(f"Conf: **{highest_conf_val:.1f}%**")
-            c_footer2.caption(f"Prob: **{highest_conf_strike['Numeric_Prob']:.1f}%**")
+            c_footer1.caption(f"Conf: **{prob_win_conf:.1f}%**")
+            c_footer2.caption(f"Dist: **{dist_str_c}**")
             
             if st.button("🔍 View Bell Curve", key="btn_alpha_conf"):
                 st.session_state.selected_strike = highest_conf_strike
@@ -576,6 +658,14 @@ with tab_hourly:
                     
                     st.metric("Confidence", f"{conf:.1f}%", f"{signal}")
                     st.caption(badge)
+                    
+                    # Show Real Data if available
+                    if op.get('Has_Real_Data'):
+                        real_edge = op.get('Real_Edge', 0)
+                        bid = op.get('Real_Yes_Bid') if "BUY YES" in signal else op.get('Real_No_Bid')
+                        # Bid is in cents usually, let's assume 1-99
+                        st.markdown(f"**Real Edge:** :green[{real_edge:.1f}%]")
+                        st.caption(f"Bid: {bid}¢")
                 
                 with c3:
                     st.write("") # Spacer
@@ -620,6 +710,12 @@ with tab_daily:
                     
                     st.metric("Confidence", f"{conf:.1f}%", f"{signal}")
                     st.caption(badge)
+                    
+                    if op.get('Has_Real_Data'):
+                        real_edge = op.get('Real_Edge', 0)
+                        bid = op.get('Real_Yes_Bid') if "BUY YES" in signal else op.get('Real_No_Bid')
+                        st.markdown(f"**Real Edge:** :green[{real_edge:.1f}%]")
+                        st.caption(f"Bid: {bid}¢")
                 
                 with c3:
                     st.write("")
