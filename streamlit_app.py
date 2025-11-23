@@ -181,56 +181,65 @@ def display_market_context():
 def categorize_markets(markets, ticker):
     """
     Categorizes markets into Hourly, Daily, and Range buckets based on expiration and title.
+
+    This implementation uses the system `zoneinfo` timezone for America/New_York
+    so DST is handled correctly. Crypto (BTC/ETH) hourly opportunities are only
+    considered between 09:00 and 23:59 ET. Index markets use the usual logic.
     """
+    from zoneinfo import ZoneInfo
+
     buckets = {'hourly': [], 'daily': [], 'range': []}
-    now = datetime.utcnow()
-    
-    # Define Timezone for "9am to 12am" logic (ET)
-    # UTC-5 for simplicity (Standard Time)
-    offset = timedelta(hours=-5)
-    now_et = now + offset
-    
+
+    now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
+    ny_tz = ZoneInfo("America/New_York")
+    now_ny = now_utc.astimezone(ny_tz)
+
     is_crypto = ticker in ["BTC", "ETH"]
-    
+
     for m in markets:
         try:
-            # Parse expiration
             exp_str = m.get('expiration')
             if not exp_str:
                 continue
-            
-            # Handle ISO format (sometimes with Z, sometimes without)
-            exp_time = pd.to_datetime(exp_str).replace(tzinfo=None)
-            
-            # Check for Range
-            title = m.get('title', '').lower()
-            if 'range' in title or 'between' in title:
+
+            # Parse expiration preserving timezone info if present
+            exp_time = pd.to_datetime(exp_str)
+            if exp_time.tzinfo is None:
+                # assume UTC if no tz provided
+                exp_time = exp_time.replace(tzinfo=ZoneInfo("UTC"))
+
+            # Normalize to NY timezone for date/hour checks
+            exp_ny = exp_time.astimezone(ny_tz)
+
+            # Range detection
+            title = m.get('title', '') or ''
+            t_low = title.lower()
+            if 'range' in t_low or 'between' in t_low:
                 buckets['range'].append(m)
                 continue
-            
-            # Check for Hourly (Expires within 90 mins)
-            time_diff = (exp_time - now).total_seconds() / 60
-            if 0 < time_diff <= 90:
-                # Crypto Logic: Only 9am - 12am ET (09:00 to 23:59)
+
+            # Time difference in minutes from now (UTC-based compare)
+            time_diff_min = (exp_time - now_utc).total_seconds() / 60.0
+
+            # Hourly: expires within 90 minutes AND (for crypto) inside allowed NY hours
+            if 0 < time_diff_min <= 90:
                 if is_crypto:
-                    if 9 <= now_et.hour <= 23:
+                    # Crypto active window: 09:00 - 23:59 NY time
+                    if 9 <= now_ny.hour <= 23:
                         buckets['hourly'].append(m)
                 else:
-                    # Indices: Standard logic (Accept all available)
                     buckets['hourly'].append(m)
                 continue
-                
-            # Check for Daily Close (15:50 - 17:10 ET)
-            # Convert to ET (UTC-5 or UTC-4). Let's approximate UTC-5 for now or use pytz if available.
-            # 16:00 ET is 21:00 UTC (Standard) or 20:00 UTC (Daylight).
-            # Let's just check if it expires today and is late in the day (after 20:00 UTC)
-            if exp_time.date() == now.date() and exp_time.hour >= 20:
+
+            # Daily: if it expires on the same NY date and the expiration hour is around market close
+            # We'll consider daily if expiration local date == today and hour in [15..23]
+            if exp_ny.date() == now_ny.date() and 15 <= exp_ny.hour <= 23:
                 buckets['daily'].append(m)
                 continue
-                
+
         except Exception as e:
             print(f"Error categorizing market: {e}")
-            
+
     return buckets
 
 def run_scanner(timeframe_override=None):
@@ -435,6 +444,33 @@ else:
     api_status = "❌ Error"
     
 st.sidebar.caption(f"API Status: **{api_status}**")
+
+# Show counts of opportunities per bucket for the currently selected asset
+selected_asset_sidebar = st.session_state.get('selected_asset', 'SPX')
+scan = st.session_state.get('scan_results', {'strikes': [], 'ranges': []})
+strikes_list = scan.get('strikes', [])
+ranges_list = scan.get('ranges', [])
+cnt_hourly = 0
+cnt_daily = 0
+cnt_range = 0
+for s in strikes_list:
+    try:
+        if s.get('Asset') == selected_asset_sidebar:
+            tf = s.get('Timeframe', '')
+            if tf and tf.lower().startswith('hour'):
+                cnt_hourly += 1
+            elif tf and ('daily' in tf.lower() or 'end' in tf.lower()):
+                cnt_daily += 1
+    except Exception:
+        continue
+for r in ranges_list:
+    try:
+        if r.get('Asset') == selected_asset_sidebar:
+            cnt_range += 1
+    except Exception:
+        continue
+
+st.sidebar.caption(f"Opportunities for {selected_asset_sidebar}: ⚡{cnt_hourly}  📅{cnt_daily}  🎯{cnt_range}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💰 PnL Calculator")
