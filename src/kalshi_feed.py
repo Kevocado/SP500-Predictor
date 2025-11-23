@@ -21,29 +21,27 @@ def get_real_kalshi_markets(ticker):
     """
     if not API_KEY:
         print("ℹ️ KALSHI_API_KEY not found. Attempting public data fetch...")
-        # Proceed without key
     
-    # Map our tickers to Kalshi series tickers
+    # Map our tickers to Kalshi's actual series tickers
     ticker_map = {
-        "BTC": "KXBT",
+        "BTC": "KXBTC",
         "ETH": "KXETH",
-        "SPX": "KXSPX",
-        "Nasdaq": "KXNASDAQ"
+        "SPX": "KXINX",       # S&P 500 Range
+        "Nasdaq": "KXNASDAQ"  # Keeping original, but could be KXNASDAQ100
     }
     
     series_ticker = ticker_map.get(ticker)
     if not series_ticker:
+        print(f"⚠️ No Kalshi series mapping for {ticker}")
         return []
 
     try:
-        # Fetch markets
+        # Server-side filtering with params
         params = {
-            "limit": 200,
-            "status": "open"
+            "series_ticker": series_ticker,
+            "status": "open",
+            "limit": 200
         }
-        
-        # Add series_ticker if we want to filter (but let's try without first)
-        # params["series_ticker"] = series_ticker
         
         headers = {}
         if API_KEY:
@@ -67,77 +65,37 @@ def get_real_kalshi_markets(ticker):
         
         print(f"   Total markets returned: {len(markets)}")
         
-        # Debug: Show what fields are available
-        if markets:
-            sample = markets[0]
-            print(f"   Sample ticker: {sample.get('ticker')}")
-            print(f"   Sample title: {sample.get('title')}")
-        
-        # Filter by ticker prefix or title keywords
         results = []
         for m in markets:
-            market_ticker = m.get('ticker', '')
-            market_title = m.get('title', '')
-            market_subtitle = m.get('subtitle', '')
+            # Extract strike price
+            strike_price = m.get('strike_price')
             
-            # Check if ticker starts with our series prefix (e.g., KXBT-, KXSPX-)
-            # OR if title/subtitle contains relevant keywords
-            matched = False
+            # If no strike_price field, try parsing from subtitle
+            if not strike_price:
+                subtitle_text = m.get('yes_sub_title') or m.get('subtitle', '')
+                import re
+                numbers = re.findall(r'[\d,]+', subtitle_text.replace('$', ''))
+                if numbers:
+                    try:
+                        strike_price = float(numbers[0].replace(',', ''))
+                    except:
+                        pass
             
-            # Pattern 1: Ticker starts with series (e.g., "KXBT-25DEC-90000")
-            if market_ticker.startswith(f"{series_ticker}-"):
-                matched = True
+            # Bid/Ask
+            yes_bid = m.get('yes_bid', 0)
+            no_bid = m.get('no_bid', 0)
             
-            # Pattern 2: Search in title for keywords
-            title_lower = (market_title + " " + market_subtitle).lower()
-            keywords = {
-                "KXBT": ["bitcoin", "btc"],
-                "KXETH": ["ethereum", "eth"],
-                "KXSPX": ["s&p", "spx", "s&p 500"],
-                "KXNASDAQ": ["nasdaq", "ndx", "nasdaq-100"]
-            }
+            results.append({
+                'ticker': ticker,
+                'strike_price': strike_price,
+                'yes_bid': yes_bid,
+                'no_bid': no_bid,
+                'expiration': m.get('expiration_time'),
+                'market_id': m.get('ticker'),
+                'title': m.get('title', '')
+            })
             
-            if series_ticker in keywords:
-                for keyword in keywords[series_ticker]:
-                    if keyword in title_lower:
-                        matched = True
-                        break
-            
-            if matched:
-                # Extract strike price from subtitle or title
-                strike_price = m.get('strike_price')
-                
-                # If no strike_price, try parsing from yes_sub_title or subtitle
-                # (e.g., "> $90,000" or "Above 90000")
-                if not strike_price:
-                    # Try parsing from subtitle
-                    subtitle_text = m.get('yes_sub_title') or m.get('subtitle', '')
-                    # Simple regex to find numbers
-                    import re
-                    numbers = re.findall(r'[\d,]+', subtitle_text.replace('$', ''))
-                    if numbers:
-                        try:
-                            strike_price = float(numbers[0].replace(',', ''))
-                        except:
-                            pass
-                
-                # Bid/Ask
-                yes_bid = m.get('yes_bid', 0)
-                no_bid = m.get('no_bid', 0)
-                
-                print(f"   Found: {market_ticker} | Title: {market_title[:50]} | Strike: {strike_price}")
-                
-                results.append({
-                    'ticker': ticker,
-                    'strike_price': strike_price,
-                    'yes_bid': yes_bid,
-                    'no_bid': no_bid,
-                    'expiration': m.get('expiration_time'),
-                    'market_id': m.get('ticker'),
-                    'title': market_title
-                })
-            
-        print(f"   Filtered to {len(results)} markets for {series_ticker}")
+        print(f"   Extracted {len(results)} markets with pricing data")
         return results
 
     except Exception as e:
