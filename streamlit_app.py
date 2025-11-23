@@ -227,8 +227,8 @@ def categorize_markets(markets, ticker):
             time_diff_hours = time_diff_min / 60.0
             time_diff_days = time_diff_hours / 24.0
 
-            # Hourly: expires within 180 minutes (3 hours) AND (for crypto) inside allowed NY hours
-            if 0 < time_diff_min <= 180:
+            # Hourly: expires within 90 minutes AND (for crypto) inside allowed NY hours
+            if 0 < time_diff_min <= 90:
                 if is_crypto:
                     # Crypto active window: 09:00 - 23:59 NY time
                     if 9 <= now_ny.hour <= 23:
@@ -333,6 +333,13 @@ def run_scanner(timeframe_override=None):
                     strike = m.get('strike_price')
                     if not strike: continue
                     
+                    # Moneyness Filter: Check if strike is within 2% of current price
+                    # Avoid "Junk Trades" that are deep OTM/ITM
+                    if curr_price_hourly > 0:
+                        pct_diff = abs(strike - curr_price_hourly) / curr_price_hourly
+                        if pct_diff > 0.02:
+                            continue # Skip if > 2% away
+                    
                     market_type = m.get('market_type', 'above')
                     
                     # Calculate Prob (Model predicts price > strike)
@@ -391,6 +398,13 @@ def run_scanner(timeframe_override=None):
                     strike = m.get('strike_price')
                     if not strike: continue
                     
+                    # Moneyness Filter: Check if strike is within 2% of current price
+                    curr_price_daily = df_daily['Close'].iloc[-1]
+                    if curr_price_daily > 0:
+                        pct_diff = abs(strike - curr_price_daily) / curr_price_daily
+                        if pct_diff > 0.02:
+                            continue # Skip if > 2% away
+
                     market_type = m.get('market_type', 'above')
                     
                     # Calculate Prob (Model predicts price > strike)
@@ -449,7 +463,7 @@ def run_scanner(timeframe_override=None):
                     time_diff_min = (exp_time - now_utc).total_seconds() / 60.0
                     
                     # Select Model & Data
-                    if time_diff_min <= 180 and model_hourly and not df_hourly.empty:
+                    if time_diff_min <= 90 and model_hourly and not df_hourly.empty:
                         pred = pred_hourly
                         rmse = rmse_hourly
                         curr_price = df_hourly['Close'].iloc[-1]
@@ -748,7 +762,7 @@ with col_feed:
     tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly", "📅 End of Day", "🎯 Ranges"])
 
 with tab_hourly:
-    st.caption("Short-term opportunities expiring in < 3 hours")
+    st.caption("Short-term opportunities expiring in < 90 mins")
     hourly_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Hourly"]
     
     if hourly_ops:
