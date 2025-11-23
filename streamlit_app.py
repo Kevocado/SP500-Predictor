@@ -472,8 +472,6 @@ st.markdown("---")
 # And a separate Performance tab
 
 # === ALPHA DECK (Hero Section) ===
-st.markdown("### 💎 Alpha Deck")
-
 all_strikes = st.session_state.scan_results['strikes']
 all_ranges = st.session_state.scan_results['ranges']
 
@@ -777,9 +775,11 @@ with tab_hourly:
     
     if hourly_ops:
         # Sort by Edge (Confidence)
-        hourly_ops.sort(key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)
+        hourly_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
         
         for i, op in enumerate(hourly_ops):
+    # Highlight top 3 Alpha Picks
+    alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
             with st.container(border=True):
                 # Deal Ticket Layout: 2 Columns
                 c1, c2 = st.columns([1.5, 1])
@@ -837,7 +837,7 @@ with tab_hourly:
 
                 with c1:
                     # Header: Signal
-                    st.markdown(f"### :green[{signal}]")
+                    st.markdown(f"### :green[{signal}] {alpha_badge}")
                     # Sub-header: Strike
                     st.markdown(f"**{op['Strike']}**")
                     # Badge
@@ -850,16 +850,24 @@ with tab_hourly:
                     # Bid/Ask
                     if op.get('Has_Real_Data'):
                         bid = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
-                        # Ask is usually Bid + Spread. Kalshi spread is tight, maybe +1-2 cents?
-                        # We don't have Ask in the feed currently, let's just show Bid.
-                        # Or if we want to be fancy, Bid / Ask placeholder.
-                        # User asked for "Bid: 42¢ | Ask: 45¢". We only have Bid from our feed.
-                        # Let's just show Bid for now or update feed later.
-                        price_str = f"Bid: {bid}¢"
+                        ask = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
+                        price_str = f"Bid: {bid}¢ | Ask: {ask}¢"
                     else:
-                        price_str = "Bid: --"
-                    
+                        price_str = "Bid: -- | Ask: --"
+
                     st.markdown(f"**{price_str}**")
+
+                    # PnL Calculator
+                    wager = st.session_state.wager_amount
+                    if ask and ask > 0:
+                        contracts = wager / ask
+                        payout = contracts * 1.00
+                        profit = payout - wager
+                        roi = (profit / wager) * 100
+                        profit_str = f"Potential Profit: +${profit:.2f} ({roi:.0f}%)"
+                        st.caption(f":green[{profit_str}]")
+                    else:
+                        st.caption("Potential Profit: —")
                     
                     # Model Value
                     model_val = int(conf) # roughly cents
@@ -886,9 +894,11 @@ with tab_daily:
     daily_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Daily" or s['Timeframe'] == "End of Day"]
     
     if daily_ops:
-        daily_ops.sort(key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)
+        daily_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
         
         for i, op in enumerate(daily_ops):
+    # Highlight top 3 Alpha Picks
+    alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
             with st.container(border=True):
                 # Deal Ticket Layout: 2 Columns
                 c1, c2 = st.columns([1.5, 1])
@@ -936,7 +946,7 @@ with tab_daily:
                     context_line = "Current: N/A"
 
                 with c1:
-                    st.markdown(f"### :green[{signal}]")
+                    st.markdown(f"### :green[{signal}] {alpha_badge}")
                     st.markdown(f"**{op['Strike']}**")
                     st.caption(f":{badge_color}[{badge_text}]")
                     st.caption(context_line)
