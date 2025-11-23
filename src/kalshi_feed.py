@@ -67,38 +67,38 @@ def get_real_kalshi_markets(ticker):
         
         print(f"   Total markets returned: {len(markets)}")
         
-        # Filter by series_ticker client-side
+        # Debug: Show what fields are available
+        if markets:
+            sample = markets[0]
+            print(f"   Sample market fields: {list(sample.keys())}")
+            print(f"   Sample ticker: {sample.get('ticker')}")
+            print(f"   Sample event_ticker: {sample.get('event_ticker')}")
+            print(f"   Sample series_ticker: {sample.get('series_ticker', 'NOT FOUND')}")
+        
+        # Filter by series_ticker or event_ticker
         results = []
         for m in markets:
-            # Check if this market matches our series
+            # Check both series_ticker and event_ticker
             market_series = m.get('series_ticker', '')
-            if series_ticker.lower() not in market_series.lower():
-                continue
+            event_ticker = m.get('event_ticker', '')
+            
+            # Look for our ticker in either field
+            if series_ticker.lower() in market_series.lower() or series_ticker.lower() in event_ticker.lower():
+                # Extract data
+                strike_price = m.get('strike_price')
                 
-            # Extract data
-            # Strike is usually in the subtitle or title, e.g. "Bitcoin > $90,000"
-            # or structured in 'strike_price' field if available.
-            strike_price = m.get('strike_price')
-            if not strike_price:
-                # Try parsing from title/subtitle if strike_price is missing
-                # This is a fallback and might be fragile.
-                pass
-            
-            # Bid/Ask
-            # yes_bid = price you pay for YES (market_bid)
-            # no_bid = price you pay for NO (market_ask? or explicit no_bid?)
-            # Kalshi usually provides 'yes_bid', 'yes_ask', 'no_bid', 'no_ask'.
-            yes_bid = m.get('yes_bid', 0)
-            no_bid = m.get('no_bid', 0)
-            
-            results.append({
-                'ticker': ticker,
-                'strike_price': strike_price,
-                'yes_bid': yes_bid,
-                'no_bid': no_bid,
-                'expiration': m.get('expiration_time'),
-                'market_id': m.get('ticker') # The specific market ticker, e.g. KXBT-25DEC-100000
-            })
+                # Bid/Ask
+                yes_bid = m.get('yes_bid', 0)
+                no_bid = m.get('no_bid', 0)
+                
+                results.append({
+                    'ticker': ticker,
+                    'strike_price': strike_price,
+                    'yes_bid': yes_bid,
+                    'no_bid': no_bid,
+                    'expiration': m.get('expiration_time'),
+                    'market_id': m.get('ticker')
+                })
             
         print(f"   Filtered to {len(results)} markets for {series_ticker}")
         return results
