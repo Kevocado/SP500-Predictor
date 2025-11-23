@@ -27,6 +27,7 @@ It calculates the probability of price targets for Indices, Crypto, and High-Vol
 # Sidebar for controls
 st.sidebar.header("Controls")
 selected_ticker = st.sidebar.selectbox("Select Asset", ["SPX", "Nasdaq", "BTC", "ETH"])
+timeframe_view = st.sidebar.radio("Timeframe", ["Hourly", "Daily"], index=0)
 
 if st.sidebar.button("Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
@@ -52,20 +53,24 @@ from src.model import load_model, predict_next_hour, calculate_probability, get_
 from src.azure_logger import log_prediction, fetch_all_logs
 from datetime import timedelta
 
-
+def check_daily_range(predicted_price, ranges_list):
+    """
+    Checks which range the predicted price falls into.
+    
+    Args:
+        predicted_price (float): The predicted closing price.
+        ranges_list (list): List of tuples (min, max).
+        
+    Returns:
+        tuple: The matching range (min, max) or None.
+    """
+    for r in ranges_list:
+        if r[0] <= predicted_price < r[1]:
+            return r
+    return None
 
 # Main content
 st.title(f"📈 {selected_ticker} Hourly Predictor")
-
-# Market Status Indicator
-status = get_market_status()
-st.markdown(f"""
-    <div style="padding: 10px; border-radius: 5px; background-color: {'#1b4d1b' if status['is_open'] else '#4d1b1b'}; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
-        <span style="height: 12px; width: 12px; background-color: {status['color']}; border-radius: 50%; display: inline-block;"></span>
-        <span style="font-weight: bold; color: white;">{status['status_text']}</span>
-        <span style="color: #cccccc; margin-left: auto;">{status['next_event_text']}</span>
-    </div>
-""", unsafe_allow_html=True)
 
 tab1, tab2, tab3 = st.tabs(["Live Prediction", "Model Performance", "📜 History (Azure)"])
 
@@ -93,12 +98,9 @@ with tab1:
                 curr_price_scan = df_scan['Close'].iloc[-1]
                 
                 # Determine Status
-                is_crypto = ticker in ["BTC", "ETH"]
-                market_status = get_market_status()
+                market_status = get_market_status(ticker)
                 
-                if is_crypto:
-                    status_icon = "🟢" # Crypto always open
-                elif market_status['is_open']:
+                if market_status['is_open']:
                     status_icon = "🟢"
                 else:
                     status_icon = "🔴"
@@ -122,6 +124,7 @@ with tab1:
                     if action != "PASS":
                         scan_results.append({
                             "Asset": ticker,
+                            "Type": "Hourly", # Default to Hourly for scanner for now
                             "Status": status_icon,
                             "Strike": f"> ${strike}",
                             "Prob": f"{prob:.1f}%",
@@ -148,6 +151,17 @@ with tab1:
 
     # 2. Deep Dive (Single Asset)
     st.subheader(f"🔍 Deep Dive: {selected_ticker}")
+    
+    # Market Status Indicator
+    status = get_market_status(selected_ticker)
+    st.markdown(f"""
+        <div style="padding: 10px; border-radius: 5px; background-color: {'#1b4d1b' if status['is_open'] else '#4d1b1b'}; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+            <span style="height: 12px; width: 12px; background-color: {status['color']}; border-radius: 50%; display: inline-block;"></span>
+            <span style="font-weight: bold; color: white;">{status['status_text']}</span>
+            <span style="color: #cccccc; margin-left: auto;">{status['next_event_text']}</span>
+        </div>
+    """, unsafe_allow_html=True)
+
     with st.spinner(f"Analyzing {selected_ticker}..."):
         # Fetch data
         df = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
@@ -168,15 +182,25 @@ with tab1:
             
             # Time calculations
             last_time = df.index[-1]
-            target_time = last_time + timedelta(hours=1)
+            
+            if timeframe_view == "Daily":
+                # Target 4 PM ET Today (or Tomorrow if past 4 PM)
+                target_time = last_time.replace(hour=16, minute=0, second=0, microsecond=0)
+                if last_time.time() >= time(16, 0):
+                    target_time += timedelta(days=1)
+                time_str = "4:00 PM (Close)"
+            else:
+                # Hourly
+                target_time = last_time + timedelta(hours=1)
+                time_str = target_time.strftime("%I:%M %p")
+                
             now_day = last_time.date()
             target_day = target_time.date()
             day_str = "Today" if now_day == target_day else target_time.strftime("%A")
-            time_str = target_time.strftime("%I:%M %p")
             target_time_display = f"{time_str} {day_str}"
             
             # Check market status for UI customization
-            market_status = get_market_status()
+            market_status = get_market_status(selected_ticker)
             
             if not market_status['is_open']:
                 st.warning("😴 **Market is Closed.** Showing analysis based on last closing price.")
@@ -191,7 +215,7 @@ with tab1:
                 
                 # Conditionally show the specific prediction number
                 if market_status['is_open']:
-                    st.metric(label="Predicted Close", value=f"${prediction:.2f}", delta=f"{prediction - current_price:.2f}")
+                    st.metric(label=f"Predicted {timeframe_view}", value=f"${prediction:.2f}", delta=f"{prediction - current_price:.2f}")
                     st.caption(f"Target: {target_time_display}")
                 else:
                     st.info("Prediction Value Hidden (Market Closed)")
@@ -206,25 +230,42 @@ with tab1:
                     """)
                 
                 st.markdown("---")
-                st.subheader("🧮 Calculator")
-                # Interactive Calculator
-                base_price = round(current_price / 10) * 10
-                user_strike = st.number_input("Check Strike Price", value=float(base_price), step=5.0)
-                if user_strike:
-                    user_prob = calculate_probability(prediction, user_strike, rmse)
-                    st.metric(f"Prob > ${user_strike}", f"{user_prob:.1f}%")
+                
+                if timeframe_view == "Daily":
+                    st.subheader("📊 Daily Range Bucket")
+                    # Generate Ranges around current price
+                    base = round(current_price / 100) * 100
+                    ranges = []
+                    for i in range(-2, 3):
+                        ranges.append((base + i*100, base + (i+1)*100))
                     
-                    if user_prob > 60:
-                        st.success("High Probability of YES")
-                    elif user_prob < 40:
-                        st.error("High Probability of NO")
-                    else:
-                        st.warning("Uncertain / Toss-up")
+                    matching_range = check_daily_range(prediction, ranges)
+                    
+                    for r in ranges:
+                        is_match = r == matching_range
+                        icon = "✅" if is_match else "⬜"
+                        st.write(f"{icon} ${r[0]} - ${r[1]}")
                         
-                with st.expander("ℹ️ How to use"):
-                    st.markdown("""
-                    **Custom Probability:** Enter any strike price (e.g., from Kalshi or Webull) to see the model's calculated probability of the price closing **ABOVE** that level.
-                    """)
+                else:
+                    st.subheader("🧮 Calculator")
+                    # Interactive Calculator
+                    base_price = round(current_price / 10) * 10
+                    user_strike = st.number_input("Check Strike Price", value=float(base_price), step=5.0)
+                    if user_strike:
+                        user_prob = calculate_probability(prediction, user_strike, rmse)
+                        st.metric(f"Prob > ${user_strike}", f"{user_prob:.1f}%")
+                        
+                        if user_prob > 60:
+                            st.success("High Probability of YES")
+                        elif user_prob < 40:
+                            st.error("High Probability of NO")
+                        else:
+                            st.warning("Uncertain / Toss-up")
+                            
+                    with st.expander("ℹ️ How to use"):
+                        st.markdown("""
+                        **Custom Probability:** Enter any strike price (e.g., from Kalshi or Webull) to see the model's calculated probability of the price closing **ABOVE** that level.
+                        """)
 
             with top_col2:
                 st.subheader("⚡ Live Opportunities")

@@ -14,10 +14,13 @@ def setup_logger(name=__name__):
         logger.setLevel(logging.INFO)
     return logger
 
-def get_market_status():
+def get_market_status(ticker="SPX"):
     """
-    Determines if the US market is open and when the next event (open/close) is.
+    Determines if the market is open for a specific asset.
     
+    Args:
+        ticker (str): The asset symbol (e.g., "SPX", "BTC").
+        
     Returns:
         dict: {
             'is_open': bool,
@@ -26,6 +29,16 @@ def get_market_status():
             'color': str
         }
     """
+    # Crypto is ALWAYS Open
+    if ticker in ["BTC", "ETH", "BTC-USD", "ETH-USD"]:
+        return {
+            'is_open': True,
+            'is_pre_market': False,
+            'status_text': "Market is OPEN (24/7)",
+            'next_event_text': "Closes Never",
+            'color': "green"
+        }
+
     tz = pytz.timezone('US/Eastern')
     now = datetime.now(tz)
     
