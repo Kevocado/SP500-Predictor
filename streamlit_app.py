@@ -15,7 +15,7 @@ import numpy as np
 from scipy import stats
 import altair as alt
 import sys
-from datetime import timedelta, time
+from datetime import timedelta, time, datetime
 
 # Hybrid Loading: .env (Local/Backend) vs st.secrets (Streamlit Cloud)
 # If AZURE_CONNECTION_STRING is missing (e.g., on Cloud where .env is gitignored),
@@ -178,6 +178,61 @@ def display_market_context():
         # Fail silently or show small error
         st.caption(f"Market Context Unavailable: {e}")
 
+def categorize_markets(markets, ticker):
+    """
+    Categorizes markets into Hourly, Daily, and Range buckets based on expiration and title.
+    """
+    buckets = {'hourly': [], 'daily': [], 'range': []}
+    now = datetime.utcnow()
+    
+    # Define Timezone for "9am to 12am" logic (ET)
+    # UTC-5 for simplicity (Standard Time)
+    offset = timedelta(hours=-5)
+    now_et = now + offset
+    
+    is_crypto = ticker in ["BTC", "ETH"]
+    
+    for m in markets:
+        try:
+            # Parse expiration
+            exp_str = m.get('expiration')
+            if not exp_str:
+                continue
+            
+            # Handle ISO format (sometimes with Z, sometimes without)
+            exp_time = pd.to_datetime(exp_str).replace(tzinfo=None)
+            
+            # Check for Range
+            title = m.get('title', '').lower()
+            if 'range' in title or 'between' in title:
+                buckets['range'].append(m)
+                continue
+            
+            # Check for Hourly (Expires within 90 mins)
+            time_diff = (exp_time - now).total_seconds() / 60
+            if 0 < time_diff <= 90:
+                # Crypto Logic: Only 9am - 12am ET (09:00 to 23:59)
+                if is_crypto:
+                    if 9 <= now_et.hour <= 23:
+                        buckets['hourly'].append(m)
+                else:
+                    # Indices: Standard logic (Accept all available)
+                    buckets['hourly'].append(m)
+                continue
+                
+            # Check for Daily Close (15:50 - 17:10 ET)
+            # Convert to ET (UTC-5 or UTC-4). Let's approximate UTC-5 for now or use pytz if available.
+            # 16:00 ET is 21:00 UTC (Standard) or 20:00 UTC (Daylight).
+            # Let's just check if it expires today and is late in the day (after 20:00 UTC)
+            if exp_time.date() == now.date() and exp_time.hour >= 20:
+                buckets['daily'].append(m)
+                continue
+                
+        except Exception as e:
+            print(f"Error categorizing market: {e}")
+            
+    return buckets
+
 def run_scanner(timeframe_override=None):
     """
     Runs the market scanner and updates session state.
@@ -186,151 +241,129 @@ def run_scanner(timeframe_override=None):
     all_strikes = []
     all_ranges = []
     
-    # Use the override if provided, else use the current view logic (which might be tricky in a loop)
-    # Actually, the scanner should probably scan based on the "Best" timeframe for each asset?
-    # Or should it respect a global "Scan Mode"?
-    # The prompt says: "When the user switches assets... automatically switch the Timeframe toggle".
-    # But for the *Scanner* (which shows ALL assets), what timeframe does it uses?
-    # Ideally, it scans each asset in its BEST timeframe.
-    # Let's implement "Smart Scanning": Scan each asset in its optimal timeframe.
-    
     progress_bar = st.progress(0)
     
     for i, ticker in enumerate(tickers_to_scan):
-        # --- 1. DAILY SCAN (End of Day) ---
-        # Run for ALL assets
         try:
+            # 1. Fetch ALL Kalshi Markets first
+            real_markets = get_real_kalshi_markets(ticker)
+            buckets = categorize_markets(real_markets, ticker)
+            
+            # 2. Load Models
+            # Hourly Model
+            df_hourly = fetch_data(ticker=ticker, period="5d", interval="1m")
+            model_hourly = load_model(ticker=ticker)
+            
+            # Daily Model
             df_daily = fetch_data(ticker=ticker, period="60d", interval="1h")
             model_daily = load_daily_model(ticker=ticker)
             
-            if not df_daily.empty and model_daily:
-                df_features_daily, _ = prepare_daily_data(df_daily)
-                pred_daily = predict_daily_close(model_daily, df_features_daily.iloc[[-1]])
-                rmse_daily = df_daily['Close'].iloc[-1] * 0.01 # Approx RMSE
-                curr_price_daily = df_daily['Close'].iloc[-1]
+            # 3. Process Hourly Bucket
+            if not df_hourly.empty and model_hourly and buckets['hourly']:
+                df_features_hourly = create_features(df_hourly)
+                pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
+                rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
+                curr_price_hourly = df_hourly['Close'].iloc[-1]
                 
-                last_time = df_daily.index[-1]
-                target_time = last_time.replace(hour=16, minute=0, second=0, microsecond=0)
-                if last_time.time() >= time(16, 0):
-                    target_time += timedelta(days=1)
+                # Generate signals for these specific markets
+                # We need to map the markets to the signal format
+                for m in buckets['hourly']:
+                    strike = m.get('strike_price')
+                    if not strike: continue
                     
-                date_str = target_time.strftime("%b %d")
-                time_str = target_time.strftime("%I:%M %p")
-                # Generate Signals (Simulated for now, but we will overlay Kalshi data if available)
-                signals_daily = generate_trading_signals(ticker, pred_daily, curr_price_daily, rmse_daily)
-            
-                # --- KALSHI OVERLAY ---
-                # Fetch real markets
-                real_markets = get_real_kalshi_markets(ticker)
-                
-                # DEBUG: Log what we got
-                print(f"📊 Kalshi returned {len(real_markets)} markets for {ticker}")
-                
-                # Create a lookup for real prices: {strike_price: {'yes': ..., 'no': ...}}
-                # Note: Strike matching might be tricky due to float precision or exact values.
-                # We'll try to find the closest match or exact match.
-                real_market_map = {}
-                for rm in real_markets:
-                    if rm.get('strike_price'):
-                        real_market_map[float(rm['strike_price'])] = rm
-                        print(f"   Strike: {rm['strike_price']} | Yes Bid: {rm['yes_bid']} | No Bid: {rm['no_bid']}")
-                
-                for s in signals_daily['strikes']:
-                    s['Asset'] = ticker
-                    s['Date'] = date_str
-                    s['Time'] = time_str
-                    s['Timeframe'] = "Daily" 
-                    s['Numeric_Prob'] = float(s['Prob'].strip('%'))
-                    s['RMSE'] = rmse_daily
+                    # Calculate Prob
+                    prob_val = calculate_probability(pred_hourly, strike, rmse_hourly)
                     
-                    # Overlay Real Data if found
-                    # s['Strike'] is a string like "> $5,920". Need to parse number.
-                    try:
-                        strike_val = float(s['Strike'].replace('>','').replace('<','').replace('$','').replace(',','').strip())
+                    # Determine Action
+                    # If Prob > 50 -> Buy YES
+                    # If Prob < 50 -> Buy NO
+                    if prob_val > 50:
+                        action = "BUY YES"
+                        conf = prob_val
+                    else:
+                        action = "BUY NO"
+                        conf = 100 - prob_val
                         
-                        # Try exact match first
-                        if strike_val in real_market_map:
-                            rm = real_market_map[strike_val]
-                        else:
-                            # Fallback: Find nearest strike within 0.1% tolerance
-                            # This handles slight mismatches (e.g. $2800 vs $2800.00) and different steps
-                            if real_market_map:
-                                nearest_strike = min(real_market_map.keys(), key=lambda x: abs(x - strike_val))
-                                tolerance = strike_val * 0.001 # 0.1% tolerance (e.g. $98 for BTC, $5 for SPX)
-                                if abs(nearest_strike - strike_val) < tolerance:
-                                    rm = real_market_map[nearest_strike]
-                                    # print(f"⚠️ No exact match for {strike_val}, using nearest: {nearest_strike}")
-                                else:
-                                    rm = None
-                            else:
-                                rm = None
-                        
-                        if rm:
-                            s['Real_Yes_Bid'] = rm['yes_bid']
-                            s['Real_No_Bid'] = rm['no_bid']
-                            s['Real_Yes_Ask'] = rm.get('yes_ask', 0)
-                            s['Real_No_Ask'] = rm.get('no_ask', 0)
-                            
-                            model_prob_win = s['Numeric_Prob'] if "BUY YES" in s['Action'] else (100 - s['Numeric_Prob'])
-                            cost = rm['yes_bid'] if "BUY YES" in s['Action'] else rm['no_bid']
-                            
-                            # Always calculate edge and show data (even if one side has 0 liquidity)
-                            s['Real_Edge'] = model_prob_win - cost
-                            s['Has_Real_Data'] = True
-                        else:
-                            s['Has_Real_Data'] = False
-                    except:
-                        s['Has_Real_Data'] = False
+                    s = {
+                        'Asset': ticker,
+                        'Strike': f"> ${strike}",
+                        'Prob': f"{conf:.1f}%",
+                        'Numeric_Prob': conf,
+                        'Action': action,
+                        'Timeframe': "Hourly",
+                        'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
+                        'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p"),
+                        'RMSE': rmse_hourly,
+                        'Real_Yes_Bid': m.get('yes_bid', 0),
+                        'Real_No_Bid': m.get('no_bid', 0),
+                        'Real_Yes_Ask': m.get('yes_ask', 0),
+                        'Real_No_Ask': m.get('no_ask', 0),
+                        'Has_Real_Data': True
+                    }
+                    
+                    # Calculate Edge
+                    cost = s['Real_Yes_Bid'] if "BUY YES" in action else s['Real_No_Bid']
+                    s['Real_Edge'] = conf - cost
                     
                     all_strikes.append(s)
-                        
-                # Ranges from Daily? Maybe not needed if Hourly covers it, but let's add if useful.
-                # Usually ranges are better for short term volatility.
-                
-        except Exception as e:
-            print(f"Daily Scanner error on {ticker}: {e}")
 
-        # --- 2. HOURLY SCAN (Intraday) ---
-        # Run if market is OPEN or it's Crypto (24/7)
-        market_status = get_market_status(ticker)
-        is_crypto = ticker in ["BTC", "ETH"]
-        
-        if market_status['is_open'] or is_crypto:
-            try:
-                df_hourly = fetch_data(ticker=ticker, period="5d", interval="1m")
-                model_hourly = load_model(ticker=ticker)
+            # 4. Process Daily Bucket
+            if not df_daily.empty and model_daily and buckets['daily']:
+                df_features_daily, _ = prepare_daily_data(df_daily)
+                pred_daily = predict_daily_close(model_daily, df_features_daily.iloc[[-1]])
+                rmse_daily = df_daily['Close'].iloc[-1] * 0.01
                 
-                if not df_hourly.empty and model_hourly:
-                    df_features_hourly = create_features(df_hourly)
-                    pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
-                    rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
-                    curr_price_hourly = df_hourly['Close'].iloc[-1]
+                for m in buckets['daily']:
+                    strike = m.get('strike_price')
+                    if not strike: continue
                     
-                    last_time = df_hourly.index[-1]
-                    target_time = last_time + timedelta(hours=1)
+                    prob_val = calculate_probability(pred_daily, strike, rmse_daily)
                     
-                    date_str = target_time.strftime("%b %d")
-                    time_str = target_time.strftime("%I:%M %p")
-                    
-                    signals_hourly = generate_trading_signals(ticker, pred_hourly, curr_price_hourly, rmse_hourly)
-                    
-                    for s in signals_hourly['strikes']:
-                        s['Asset'] = ticker
-                        s['Date'] = date_str
-                        s['Time'] = time_str
-                        s['Timeframe'] = "Hourly"
-                        s['Numeric_Prob'] = float(s['Prob'].strip('%'))
-                        s['RMSE'] = rmse_hourly
-                        all_strikes.append(s)
+                    if prob_val > 50:
+                        action = "BUY YES"
+                        conf = prob_val
+                    else:
+                        action = "BUY NO"
+                        conf = 100 - prob_val
                         
-                    for r in signals_hourly['ranges']:
-                        r['Asset'] = ticker
-                        r['Date'] = date_str
-                        r['Time'] = time_str
-                        r['Timeframe'] = "Hourly"
-                        all_ranges.append(r)
-            except Exception as e:
-                print(f"Hourly Scanner error on {ticker}: {e}")
+                    s = {
+                        'Asset': ticker,
+                        'Strike': f"> ${strike}",
+                        'Prob': f"{conf:.1f}%",
+                        'Numeric_Prob': conf,
+                        'Action': action,
+                        'Timeframe': "Daily",
+                        'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
+                        'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p"),
+                        'RMSE': rmse_daily,
+                        'Real_Yes_Bid': m.get('yes_bid', 0),
+                        'Real_No_Bid': m.get('no_bid', 0),
+                        'Real_Yes_Ask': m.get('yes_ask', 0),
+                        'Real_No_Ask': m.get('no_ask', 0),
+                        'Has_Real_Data': True
+                    }
+                    
+                    cost = s['Real_Yes_Bid'] if "BUY YES" in action else s['Real_No_Bid']
+                    s['Real_Edge'] = conf - cost
+                    
+                    all_strikes.append(s)
+            
+            # 5. Process Range Bucket (Simplified)
+            for m in buckets['range']:
+                # Just add them for display, maybe without prediction for now or simple logic
+                r = {
+                    'Asset': ticker,
+                    'Range': m.get('title'),
+                    'Predicted In Range?': "N/A", # Need range model
+                    'Action': "Watch",
+                    'Timeframe': "Hourly", # Usually ranges are hourly/daily
+                    'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
+                    'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p")
+                }
+                all_ranges.append(r)
+
+        except Exception as e:
+            print(f"Scanner error on {ticker}: {e}")
         
         progress_bar.progress((i + 1) / len(tickers_to_scan))
         
@@ -527,10 +560,10 @@ with col_feed:
     st.markdown("### 📋 Trade Opportunity Board")
     
     # Tabs for Sections
-    tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly Snipes", "📅 Daily Close", "🎯 Ranges"])
+    tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly", "📅 End of Day", "🎯 Ranges"])
 
 with tab_hourly:
-    st.caption("Short-term opportunities expiring in < 60 mins")
+    st.caption("Short-term opportunities expiring in < 90 mins")
     hourly_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Hourly"]
     
     if hourly_ops:
@@ -607,6 +640,8 @@ with tab_hourly:
                     st.caption(f":{badge_color}[{badge_text}]")
                     # Context
                     st.caption(context_line)
+                    # Time
+                    st.caption(f"Exp: {op['Time']}")
                 
                 with c2:
                     # Financials
@@ -728,6 +763,7 @@ with tab_daily:
                     st.markdown(f"**{op['Strike']}**")
                     st.caption(f":{badge_color}[{badge_text}]")
                     st.caption(context_line)
+                    st.caption(f"Exp: {op['Time']}")
                 
                 with c2:
                     # Bid/Ask
