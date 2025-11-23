@@ -26,8 +26,8 @@ def get_real_kalshi_markets(ticker):
     ticker_map = {
         "BTC": "KXBTC",
         "ETH": "KXETH",
-        "SPX": "KXINX",       # S&P 500 Range
-        "Nasdaq": "KXNASDAQ"  # Keeping original, but could be KXNASDAQ100
+        "SPX": "KXINX",           # S&P 500 Range
+        "Nasdaq": "KXNASDAQ100"   # Nasdaq-100
     }
     
     series_ticker = ticker_map.get(ticker)
@@ -84,12 +84,16 @@ def get_real_kalshi_markets(ticker):
             # Bid/Ask
             yes_bid = m.get('yes_bid', 0)
             no_bid = m.get('no_bid', 0)
+            yes_ask = m.get('yes_ask', 0)
+            no_ask = m.get('no_ask', 0)
             
             results.append({
                 'ticker': ticker,
                 'strike_price': strike_price,
                 'yes_bid': yes_bid,
                 'no_bid': no_bid,
+                'yes_ask': yes_ask,
+                'no_ask': no_ask,
                 'expiration': m.get('expiration_time'),
                 'market_id': m.get('ticker'),
                 'title': m.get('title', '')

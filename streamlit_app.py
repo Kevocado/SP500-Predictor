@@ -72,6 +72,8 @@ if 'last_scan_time' not in st.session_state:
     st.session_state.last_scan_time = None
 if 'selected_asset' not in st.session_state:
     st.session_state.selected_asset = "SPX"
+if 'wager_amount' not in st.session_state:
+    st.session_state.wager_amount = 100
 
 # --- HELPER FUNCTIONS ---
 def create_probability_bar(model_prob, market_prob=50):
@@ -261,6 +263,8 @@ def run_scanner(timeframe_override=None):
                         if rm:
                             s['Real_Yes_Bid'] = rm['yes_bid']
                             s['Real_No_Bid'] = rm['no_bid']
+                            s['Real_Yes_Ask'] = rm.get('yes_ask', 0)
+                            s['Real_No_Ask'] = rm.get('no_ask', 0)
                             
                             model_prob_win = s['Numeric_Prob'] if "BUY YES" in s['Action'] else (100 - s['Numeric_Prob'])
                             cost = rm['yes_bid'] if "BUY YES" in s['Action'] else rm['no_bid']
@@ -436,6 +440,17 @@ else:
     api_status = "❌ Error"
     
 st.sidebar.caption(f"API Status: **{api_status}**")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💰 PnL Calculator")
+st.session_state.wager_amount = st.sidebar.number_input(
+    "Wager Amount ($)", 
+    min_value=10, 
+    max_value=10000, 
+    value=st.session_state.wager_amount,
+    step=50,
+    help="How much you want to bet per trade"
+)
 
 if st.sidebar.button("🔄 Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
