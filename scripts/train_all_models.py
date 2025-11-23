@@ -16,8 +16,8 @@ def train_all():
     for ticker in tickers:
         print(f"\n=== Training model for {ticker} ===")
         try:
-            # Fetch data (using 60 days to ensure good history for training)
-            df = fetch_data(ticker=ticker, period="60d", interval="1m") # Using 5m for longer history if 1m is limited, or stick to 1m?
+            # Fetch data (using 7 days which is max for 1m data on Yahoo)
+            df = fetch_data(ticker=ticker, period="7d", interval="1m")
             # Yahoo 1m is limited to 7d. 7d of 1m data is ~2700 rows.
             # 60d of 5m data is ~4600 rows.
             # Let's stick to what the app uses: 1m data.
