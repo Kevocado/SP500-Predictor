@@ -252,12 +252,14 @@ def run_scanner(timeframe_override=None):
                         if strike_val in real_market_map:
                             rm = real_market_map[strike_val]
                         else:
-                            # Fallback: Find nearest strike within $1.00
+                            # Fallback: Find nearest strike within 0.1% tolerance
+                            # This handles slight mismatches (e.g. $2800 vs $2800.00) and different steps
                             if real_market_map:
                                 nearest_strike = min(real_market_map.keys(), key=lambda x: abs(x - strike_val))
-                                if abs(nearest_strike - strike_val) < 1.0:
+                                tolerance = strike_val * 0.001 # 0.1% tolerance (e.g. $98 for BTC, $5 for SPX)
+                                if abs(nearest_strike - strike_val) < tolerance:
                                     rm = real_market_map[nearest_strike]
-                                    print(f"⚠️ No exact match for {strike_val}, using nearest: {nearest_strike}")
+                                    # print(f"⚠️ No exact match for {strike_val}, using nearest: {nearest_strike}")
                                 else:
                                     rm = None
                             else:

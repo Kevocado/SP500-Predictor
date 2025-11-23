@@ -71,9 +71,16 @@ def get_real_kalshi_markets(ticker):
             if fb_response.status_code == 200:
                 fb_data = fb_response.json()
                 all_markets = fb_data.get('markets', [])
-                # Filter manually by ticker symbol
-                markets = [m for m in all_markets if ticker in m.get('ticker', '')]
-                print(f"   Fallback found {len(markets)} markets for {ticker}")
+                
+                # Filter manually by checking if the series_ticker is in the market's ticker string
+                # e.g. "KXBTC" in "KXBTC-23NOV25-..."
+                markets = [m for m in all_markets if series_ticker in m.get('ticker', '')]
+                
+                # Double check: if list is empty, try the raw ticker symbol (e.g. "BTC")
+                if not markets:
+                     markets = [m for m in all_markets if ticker in m.get('ticker', '')]
+                
+                print(f"   Fallback found {len(markets)} markets for {ticker} (using series {series_ticker})")
             else:
                 print(f"❌ Fallback fetch failed: {fb_response.status_code}")
 
