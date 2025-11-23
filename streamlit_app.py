@@ -333,22 +333,32 @@ def run_scanner(timeframe_override=None):
                     strike = m.get('strike_price')
                     if not strike: continue
                     
-                    # Calculate Prob
-                    prob_val = calculate_probability(pred_hourly, strike, rmse_hourly)
+                    market_type = m.get('market_type', 'above')
+                    
+                    # Calculate Prob (Model predicts price > strike)
+                    prob_above = calculate_probability(pred_hourly, strike, rmse_hourly)
+                    
+                    # Adjust for Market Type
+                    if market_type == 'below':
+                        strike_label = f"< ${strike}"
+                        prob_win = 100 - prob_above
+                    else:
+                        strike_label = f"> ${strike}"
+                        prob_win = prob_above
                     
                     # Determine Action
-                    # If Prob > 50 -> Buy YES
-                    # If Prob < 50 -> Buy NO
-                    if prob_val > 50:
+                    # If Prob Win > 50 -> Buy YES
+                    # If Prob Win < 50 -> Buy NO
+                    if prob_win > 50:
                         action = "BUY YES"
-                        conf = prob_val
+                        conf = prob_win
                     else:
                         action = "BUY NO"
-                        conf = 100 - prob_val
+                        conf = 100 - prob_win
                         
                     s = {
                         'Asset': ticker,
-                        'Strike': f"> ${strike}",
+                        'Strike': strike_label,
                         'Prob': f"{conf:.1f}%",
                         'Numeric_Prob': conf,
                         'Action': action,
@@ -360,11 +370,12 @@ def run_scanner(timeframe_override=None):
                         'Real_No_Bid': m.get('no_bid', 0),
                         'Real_Yes_Ask': m.get('yes_ask', 0),
                         'Real_No_Ask': m.get('no_ask', 0),
-                        'Has_Real_Data': True
+                        'Has_Real_Data': True,
+                        'Market_Type': market_type
                     }
                     
                     # Calculate Edge
-                    # CRITICAL FIX: Cost to Enter = ASK Price (You Buy at Ask)
+                    # Cost to Enter = ASK Price (You Buy at Ask)
                     cost = s['Real_Yes_Ask'] if "BUY YES" in action else s['Real_No_Ask']
                     s['Real_Edge'] = conf - cost
                     
@@ -380,18 +391,29 @@ def run_scanner(timeframe_override=None):
                     strike = m.get('strike_price')
                     if not strike: continue
                     
-                    prob_val = calculate_probability(pred_daily, strike, rmse_daily)
+                    market_type = m.get('market_type', 'above')
                     
-                    if prob_val > 50:
+                    # Calculate Prob (Model predicts price > strike)
+                    prob_above = calculate_probability(pred_daily, strike, rmse_daily)
+                    
+                    # Adjust for Market Type
+                    if market_type == 'below':
+                        strike_label = f"< ${strike}"
+                        prob_win = 100 - prob_above
+                    else:
+                        strike_label = f"> ${strike}"
+                        prob_win = prob_above
+                    
+                    if prob_win > 50:
                         action = "BUY YES"
-                        conf = prob_val
+                        conf = prob_win
                     else:
                         action = "BUY NO"
-                        conf = 100 - prob_val
+                        conf = 100 - prob_win
                         
                     s = {
                         'Asset': ticker,
-                        'Strike': f"> ${strike}",
+                        'Strike': strike_label,
                         'Prob': f"{conf:.1f}%",
                         'Numeric_Prob': conf,
                         'Action': action,
@@ -403,7 +425,8 @@ def run_scanner(timeframe_override=None):
                         'Real_No_Bid': m.get('no_bid', 0),
                         'Real_Yes_Ask': m.get('yes_ask', 0),
                         'Real_No_Ask': m.get('no_ask', 0),
-                        'Has_Real_Data': True
+                        'Has_Real_Data': True,
+                        'Market_Type': market_type
                     }
                     
                     # CRITICAL FIX: Cost to Enter = ASK Price (You Buy at Ask)
@@ -1033,7 +1056,7 @@ with col_analysis:
                 
                 # Parse strike price
                 strike_str = str(selected_strike['Strike'])
-                strike_price = float(strike_str.replace('>', '').replace('$', '').replace(',', '').strip())
+                strike_price = float(strike_str.replace('>', '').replace('<', '').replace('$', '').replace(',', '').strip())
                 
                 # Calculate probability
                 prob_val = calculate_probability(pred_deep, strike_price, rmse_deep)
