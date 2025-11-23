@@ -21,10 +21,13 @@ def fetch_data(ticker="SPY", period="1mo", interval="1m"):
         "Nasdaq": "^NDX",
         "SPY": "SPY"
     }
+    
+    # Map ticker if needed
     symbol = ticker_map.get(ticker, ticker)
     
     print(f"Fetching data for {symbol}...")
-    data = yf.download(symbol, period=period, interval=interval, progress=False)
+    # Fetch data with prepost=True to get pre-market data
+    data = yf.download(tickers=symbol, period=period, interval=interval, progress=False, prepost=True)
     
     if data.empty:
         print("No data found.")

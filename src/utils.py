@@ -29,54 +29,78 @@ def get_market_status():
     tz = pytz.timezone('US/Eastern')
     now = datetime.now(tz)
     
+    pre_market_open = time(4, 0)
     market_open = time(9, 30)
     market_close = time(16, 0)
     
     is_weekday = now.weekday() < 5
+    current_time = now.time()
     
-    if is_weekday and market_open <= now.time() < market_close:
-        # Market is Open
-        is_open = True
-        status_text = "Market is OPEN"
-        color = "green"
-        
-        # Calculate time to close
-        close_dt = now.replace(hour=16, minute=0, second=0, microsecond=0)
-        delta = close_dt - now
-        hours, remainder = divmod(delta.seconds, 3600)
-        minutes = remainder // 60
-        next_event_text = f"Closes in {hours}h {minutes}m"
-        
-    else:
-        # Market is Closed
-        is_open = False
-        status_text = "Market is CLOSED"
-        color = "red"
-        
-        # Calculate time to next open
-        # If before 9:30 AM today
-        if is_weekday and now.time() < market_open:
-            next_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-            day_str = "Today"
-        # If after 4 PM Friday or Weekend
-        elif now.weekday() >= 4: # Friday(4), Sat(5), Sun(6)
-            days_ahead = 7 - now.weekday() # Mon is 0
-            next_open = (now + timedelta(days=days_ahead)).replace(hour=9, minute=30, second=0, microsecond=0)
-            day_str = "Monday"
-        # If after 4 PM Mon-Thu
-        else:
-            next_open = (now + timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
-            day_str = "Tomorrow"
+    status_text = "Market is CLOSED"
+    color = "red"
+    is_open = False
+    is_pre_market = False
+    
+    if is_weekday:
+        if market_open <= current_time < market_close:
+            # Regular Market Hours
+            is_open = True
+            status_text = "Market is OPEN"
+            color = "green"
             
+            # Calculate time to close
+            close_dt = now.replace(hour=16, minute=0, second=0, microsecond=0)
+            delta = close_dt - now
+            hours, remainder = divmod(delta.seconds, 3600)
+            minutes = remainder // 60
+            next_event_text = f"Closes in {hours}h {minutes}m"
+            
+        elif pre_market_open <= current_time < market_open:
+            # Pre-Market
+            is_open = True # Treat as open for prediction purposes
+            is_pre_market = True
+            status_text = "Pre-Market OPEN"
+            color = "orange"
+            
+            # Calculate time to open
+            open_dt = now.replace(hour=9, minute=30, second=0, microsecond=0)
+            delta = open_dt - now
+            hours, remainder = divmod(delta.seconds, 3600)
+            minutes = remainder // 60
+            next_event_text = f"Opens in {hours}h {minutes}m"
+            
+        else:
+            # Closed (After hours or early morning)
+            is_open = False
+            
+            if current_time >= market_close:
+                # After Close
+                next_open = (now + timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
+                day_str = "Tomorrow"
+                if now.weekday() == 4: # Friday
+                    next_open = (now + timedelta(days=3)).replace(hour=9, minute=30, second=0, microsecond=0)
+                    day_str = "Monday"
+            else:
+                # Early Morning before 4am
+                next_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+                day_str = "Today"
+                
+            delta = next_open - now
+            hours, remainder = divmod(delta.seconds, 3600)
+            total_hours = hours + (delta.days * 24)
+            next_event_text = f"Opens {day_str} at 9:30 AM ET"
+            
+    else:
+        # Weekend
+        is_open = False
+        days_ahead = 7 - now.weekday() # Mon is 0
+        next_open = (now + timedelta(days=days_ahead)).replace(hour=9, minute=30, second=0, microsecond=0)
         delta = next_open - now
-        hours, remainder = divmod(delta.seconds, 3600)
-        # Add days to hours if delta.days > 0 (though usually we just say "Opens Monday")
-        total_hours = hours + (delta.days * 24)
-        
-        next_event_text = f"Opens {day_str} at 9:30 AM ET"
+        next_event_text = "Opens Monday at 9:30 AM ET"
 
     return {
         'is_open': is_open,
+        'is_pre_market': is_pre_market,
         'status_text': status_text,
         'next_event_text': next_event_text,
         'color': color

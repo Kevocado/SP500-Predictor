@@ -61,153 +61,192 @@ st.markdown(f"""
 tab1, tab2 = st.tabs(["Live Prediction", "Model Performance"])
 
 with tab1:
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.subheader(f"Live Market Data ({selected_ticker})")
-        
-        # Timeframe Selector
-        timeframe = st.radio("Timeframe", ["1 Day", "3 Days", "5 Days"], index=1, horizontal=True)
-        period_map = {"1 Day": "1d", "3 Days": "3d", "5 Days": "5d"}
-        selected_period = period_map[timeframe]
-        
-        # Fetch latest data
-        with st.spinner("Loading data..."):
-            df = fetch_data(ticker=selected_ticker, period=selected_period, interval="1m")
-            
-        if not df.empty:
-            # Plotting
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=df.index,
-                            open=df['Open'],
-                            high=df['High'],
-                            low=df['Low'],
-                            close=df['Close'],
-                            name=selected_ticker))
-            
-            # Hide non-trading periods (weekends and nights)
-            fig.update_xaxes(
-                rangebreaks=[
-                    dict(bounds=["sat", "mon"]), # hide weekends
-                    dict(values=["2025-12-25", "2026-01-01"]), # hide holidays (example)
-                    dict(pattern="hour", bounds=[16, 9.5]) # hide hours outside 9:30am-4pm
-                ]
-            )
-            
-            fig.update_layout(
-                title=f"{selected_ticker} Intraday Price ({timeframe})", 
-                xaxis_rangeslider_visible=False,
-                height=500,
-                margin=dict(l=0, r=0, t=30, b=0)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.error("Could not load market data.")
-
-    with col2:
-        st.subheader("Prediction")
-        
+    # 1. Data Fetching & Prediction (Do this first so we have variables for the UI)
+    with st.spinner("Analyzing Market..."):
+        # Fetch data
+        # Default to 5d for calculation, but we can use the selector for the chart later if needed
+        # Actually, let's keep the selector but maybe move it near the chart or just default to 3d for now
+        df = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
         model = load_model(ticker=selected_ticker)
         
-        if model is None:
-            st.warning(f"Model for {selected_ticker} not found. Please train the model using the sidebar button.")
-        elif not df.empty:
-            # Prepare features for inference
-            df_features = create_features(df)
+    if df.empty:
+        st.error("Could not load market data.")
+    elif model is None:
+        st.warning(f"Model for {selected_ticker} not found. Please train the model.")
+    else:
+        # Prepare features & Predict
+        try:
+            # Check market status for prediction visibility
+            # We want to show prediction if market is OPEN or PRE-MARKET
+            # get_market_status returns is_open=True for both regular and pre-market now
+            market_status = get_market_status()
             
-            # Get prediction
-            try:
+            if not market_status['is_open']:
+                st.info("😴 **Market is Closed.** Predictions will resume during Pre-Market (4:00 AM ET) and Regular Hours.")
+                
+                # Still show the chart for context
+                st.markdown("---")
+                st.subheader(f"📉 Market Context ({selected_ticker})")
+                
+                # Timeframe Selector for Chart
+                timeframe = st.radio("Timeframe", ["1 Day", "3 Days", "5 Days"], index=1, horizontal=True, key="chart_timeframe")
+                period_map = {"1 Day": "1d", "3 Days": "3d", "5 Days": "5d"}
+                selected_period = period_map[timeframe]
+                
+                # Filter df based on selected_period roughly
+                if selected_period == "1d":
+                    chart_df = df[df.index >= df.index[-1] - timedelta(days=1)]
+                elif selected_period == "3d":
+                    chart_df = df[df.index >= df.index[-1] - timedelta(days=3)]
+                else:
+                    chart_df = df # 5d was the default fetch
+                
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(x=chart_df.index,
+                                open=chart_df['Open'],
+                                high=chart_df['High'],
+                                low=chart_df['Low'],
+                                close=chart_df['Close'],
+                                name=selected_ticker))
+                
+                fig.update_xaxes(
+                    rangebreaks=[
+                        dict(bounds=["sat", "mon"]),
+                        dict(values=["2025-12-25", "2026-01-01"]),
+                        dict(pattern="hour", bounds=[16, 9.5]) # Keep this to show regular hours only on chart? 
+                        # Actually if we have pre-market data, we might want to show it.
+                        # But user asked to hide gaps. Let's keep it clean for now.
+                    ]
+                )
+                
+                fig.update_layout(
+                    xaxis_rangeslider_visible=False,
+                    height=400,
+                    margin=dict(l=0, r=0, t=10, b=0)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+            else:
+                # Market is OPEN (or Pre-Market) -> Show Prediction
+                df_features = create_features(df)
                 prediction = predict_next_hour(model, df_features, ticker=selected_ticker)
                 current_price = df['Close'].iloc[-1]
+                rmse = get_recent_rmse(model, df, ticker=selected_ticker)
                 
-                # Calculate Target Time
+                # Time calculations
                 last_time = df.index[-1]
                 target_time = last_time + timedelta(hours=1)
-                
-                # Format time nicely
                 now_day = last_time.date()
                 target_day = target_time.date()
                 day_str = "Today" if now_day == target_day else target_time.strftime("%A")
                 time_str = target_time.strftime("%I:%M %p")
                 target_time_display = f"{time_str} {day_str}"
                 
-                st.metric(label="Current Price", value=f"${current_price:.2f}")
-                st.metric(label="Predicted Next Hour Close", value=f"${prediction:.2f}", delta=f"{prediction - current_price:.2f}")
+                # --- TOP SECTION: ACTIONABLE INSIGHTS ---
+                # Layout: Left (Metrics + Calculator), Right (Edge Table)
+                top_col1, top_col2 = st.columns([1, 1.5])
                 
-                st.info(f"🎯 **Target Time:** {target_time_display}\n\n(Based on data from {last_time.strftime('%I:%M %p')})")
-                
-                # --- EDGE FINDER SECTION ---
-                st.markdown("---")
-                st.subheader("⚡ Prediction Market Edge Finder")
-                
-                # 1. Calculate RMSE
-                rmse = get_recent_rmse(model, df, ticker=selected_ticker)
-                st.caption(f"Model Uncertainty (RMSE): ±${rmse:.2f}")
-                
-                # 2. Market Simulator (Generate Strikes)
-                # Generate strikes around current price (e.g., +/- 0.1%, 0.2%...)
-                # Or just fixed points. Let's use fixed points relative to current price.
-                # Round current price to nearest 10
-                base_price = round(current_price / 10) * 10
-                strikes = []
-                for i in range(-2, 3): # -20, -10, 0, +10, +20
-                    strikes.append(base_price + (i * 10))
-                
-                edge_data = []
-                for strike in strikes:
-                    prob_yes = calculate_probability(prediction, strike, rmse)
+                with top_col1:
+                    st.subheader("🎯 Prediction")
+                    st.metric(label="Current Price", value=f"${current_price:.2f}")
+                    st.metric(label="Predicted Close", value=f"${prediction:.2f}", delta=f"{prediction - current_price:.2f}")
+                    st.caption(f"Target: {target_time_display}")
+                    st.caption(f"Model Uncertainty (RMSE): ±${rmse:.2f}")
                     
-                    # Simulate Market Price (Dummy Logic for Demo)
-                    # In reality, market price ~ probability, but we want to show "Edge"
-                    # Let's simulate a slightly inefficient market
-                    # If prob is 80%, market might be 70c or 90c.
-                    import random
-                    noise = random.uniform(-10, 10)
-                    market_price_cents = min(99, max(1, int(prob_yes + noise)))
-                    
-                    # Calculate Edge
-                    # Edge = Model Prob - Market Price
-                    edge = prob_yes - market_price_cents
-                    
-                    # Action
-                    if prob_yes > 60 and edge > 5:
-                        action = "🟢 BUY YES"
-                    elif prob_yes < 40 and edge < -5: # If prob is low (e.g. 20%), and market is high (e.g. 30%), we want to Buy NO.
-                        # Buying NO at 30c is like Buying YES at 70c? No.
-                        # Buying NO means we profit if it DOESN'T hit.
-                        # If Model says 20% chance of YES, then 80% chance of NO.
-                        # If Market says 30c for YES (30% chance), Market implies 70% chance of NO.
-                        # Our NO prob (80%) > Market NO prob (70%). Edge is positive for NO.
-                        action = "🔴 BUY NO"
-                    else:
-                        action = "⚪ PASS"
-                        
-                    edge_data.append({
-                        "Strike Price": f"> ${strike}",
-                        "Market Price (Sim)": f"{market_price_cents}¢",
-                        "Model Prob": f"{prob_yes:.1f}%",
-                        "Edge": f"{edge:.1f}%",
-                        "Action": action
-                    })
-                    
-                st.table(edge_data)
-                
-                # 3. Interactive Calculator
-                with st.expander("🧮 Probability Calculator"):
-                    user_strike = st.number_input("Enter Strike Price", value=float(base_price), step=5.0)
+                    st.markdown("---")
+                    st.subheader("🧮 Calculator")
+                    # Interactive Calculator
+                    base_price = round(current_price / 10) * 10
+                    user_strike = st.number_input("Check Strike Price", value=float(base_price), step=5.0)
                     if user_strike:
                         user_prob = calculate_probability(prediction, user_strike, rmse)
-                        st.metric(f"Probability Price > ${user_strike}", f"{user_prob:.1f}%")
+                        st.metric(f"Prob > ${user_strike}", f"{user_prob:.1f}%")
                         
                         if user_prob > 60:
                             st.success("High Probability of YES")
                         elif user_prob < 40:
-                            st.error("High Probability of NO (Low chance of YES)")
+                            st.error("High Probability of NO")
                         else:
                             st.warning("Uncertain / Toss-up")
 
-            except Exception as e:
-                st.error(f"Error making prediction: {e}")
+                with top_col2:
+                    st.subheader("⚡ Live Opportunities")
+                    
+                    # Generate Strikes
+                    strikes = []
+                    for i in range(-2, 3): # -20, -10, 0, +10, +20
+                        strikes.append(base_price + (i * 10))
+                    
+                    edge_data = []
+                    for strike in strikes:
+                        prob_yes = calculate_probability(prediction, strike, rmse)
+                        
+                        # Simulate Market Price
+                        import random
+                        noise = random.uniform(-10, 10)
+                        market_price_cents = min(99, max(1, int(prob_yes + noise)))
+                        
+                        edge = prob_yes - market_price_cents
+                        
+                        if prob_yes > 60 and edge > 5:
+                            action = "🟢 BUY YES"
+                        elif prob_yes < 40 and edge < -5:
+                            action = "🔴 BUY NO"
+                        else:
+                            action = "⚪ PASS"
+                            
+                        edge_data.append({
+                            "Strike": f"> ${strike}",
+                            "Mkt Price": f"{market_price_cents}¢",
+                            "Model %": f"{prob_yes:.1f}%",
+                            "Edge": f"{edge:.1f}%",
+                            "Action": action
+                        })
+                    
+                    st.table(edge_data)
+
+                # --- BOTTOM SECTION: CONTEXT (CHART) ---
+                st.markdown("---")
+                st.subheader(f"📉 Market Context ({selected_ticker})")
+                
+                # Timeframe Selector for Chart
+                timeframe = st.radio("Timeframe", ["1 Day", "3 Days", "5 Days"], index=1, horizontal=True, key="chart_timeframe")
+                period_map = {"1 Day": "1d", "3 Days": "3d", "5 Days": "5d"}
+                selected_period = period_map[timeframe]
+                
+                # Filter df based on selected_period roughly
+                if selected_period == "1d":
+                    chart_df = df[df.index >= df.index[-1] - timedelta(days=1)]
+                elif selected_period == "3d":
+                    chart_df = df[df.index >= df.index[-1] - timedelta(days=3)]
+                else:
+                    chart_df = df # 5d was the default fetch
+                
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(x=chart_df.index,
+                                open=chart_df['Open'],
+                                high=chart_df['High'],
+                                low=chart_df['Low'],
+                                close=chart_df['Close'],
+                                name=selected_ticker))
+                
+                fig.update_xaxes(
+                    rangebreaks=[
+                        dict(bounds=["sat", "mon"]),
+                        dict(values=["2025-12-25", "2026-01-01"]),
+                        dict(pattern="hour", bounds=[16, 9.5])
+                    ]
+                )
+                
+                fig.update_layout(
+                    xaxis_rangeslider_visible=False,
+                    height=400,
+                    margin=dict(l=0, r=0, t=10, b=0)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Error in analysis: {e}")
 
 with tab2:
     st.subheader("Model Accuracy Over Time")
