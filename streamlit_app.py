@@ -174,11 +174,13 @@ selected_ticker = st.radio(
 if st.session_state.get('last_selected_asset') != selected_ticker:
     # Asset changed!
     recommended_tf = determine_best_timeframe(selected_ticker)
-    st.session_state.timeframe_view = recommended_tf
+    # Map internal "Daily" back to UI "End of Day"
+    reverse_map = {"Hourly": "Hourly", "Daily": "End of Day"}
+    st.session_state.timeframe_view = reverse_map[recommended_tf]
     st.session_state.last_selected_asset = selected_ticker
     
     if recommended_tf == "Daily" and get_market_status(selected_ticker)['is_open'] == False:
-        st.toast(f"Switched to Daily view (Market Closed for {selected_ticker})", icon="ℹ️")
+        st.toast(f"Switched to End of Day view (Market Closed for {selected_ticker})", icon="ℹ️")
 
 # Timeframe Selector (Sidebar or Top?)
 # User asked to remove Sidebar selector. Let's put Timeframe near the Nav or in Sidebar?
@@ -186,12 +188,18 @@ if st.session_state.get('last_selected_asset') != selected_ticker:
 # Let's keep Timeframe in Sidebar for now or move it to top right?
 # Sidebar is fine for settings, but "Smart Timeframe" implies it's active.
 # Let's put it in the sidebar but controllable.
+# Timeframe Selector
 timeframe_view = st.sidebar.radio(
     "Timeframe", 
-    ["Hourly", "Daily"], 
+    ["Hourly", "End of Day"], 
     key="timeframe_view", # Linked to session state
-    help="Hourly: Predicts price 60 mins from now.\nDaily: Predicts closing price at 4:00 PM ET."
+    help="Hourly: Predicts price 60 mins from now.\nEnd of Day: Predicts closing price at 4:00 PM ET."
 )
+
+# Map "End of Day" back to "Daily" for internal logic if needed, or just use "End of Day" string
+# Let's normalize it to "Daily" for internal logic to avoid breaking everything
+timeframe_map = {"Hourly": "Hourly", "End of Day": "Daily"}
+internal_timeframe = timeframe_map[timeframe_view]
 
 if st.sidebar.button("Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
@@ -245,6 +253,14 @@ with tab1:
     with scan_tab1:
         if all_strikes:
             df_strikes = pd.DataFrame(all_strikes)
+            
+            # SORTING: Best Probability (closest to 0 or 100, i.e., highest confidence)
+            # We added 'Numeric_Prob' earlier. Let's use it.
+            # We want rows with Prob > 50 sorted desc, and Prob < 50 sorted asc?
+            # Or just sort by "Edge" (distance from 50%)
+            df_strikes['Edge_Abs'] = abs(df_strikes['Numeric_Prob'] - 50)
+            df_strikes = df_strikes.sort_values('Edge_Abs', ascending=False).drop(columns=['Edge_Abs'])
+            
             cols = ['Asset', 'Timeframe', 'Date', 'Time', 'Strike', 'Prob', 'Action']
             
             def highlight_edge(row):
@@ -265,6 +281,10 @@ with tab1:
                 return ['background-color: #1b4d1b' if row['Is_Winner'] else '' for _ in row]
             
             df_ranges = pd.DataFrame(all_ranges)
+            
+            # SORTING: Show Winners first
+            df_ranges = df_ranges.sort_values('Is_Winner', ascending=False)
+            
             cols = ['Asset', 'Timeframe', 'Date', 'Time', 'Range', 'Predicted In Range?', 'Action', 'Is_Winner']
             st.dataframe(df_ranges[cols].style.apply(highlight_winner, axis=1), use_container_width=True)
         else:
@@ -298,7 +318,7 @@ with tab2:
         
     # Fetch Data for Deep Dive
     with st.spinner(f"Analyzing {selected_ticker}..."):
-        if timeframe_view == "Daily":
+        if internal_timeframe == "Daily":
             df = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
             model = load_daily_model(ticker=selected_ticker)
         else:
@@ -312,7 +332,7 @@ with tab2:
     else:
         # Prepare features & Predict
         try:
-            if timeframe_view == "Daily":
+            if internal_timeframe == "Daily":
                 df_features, _ = prepare_daily_data(df)
                 last_row = df_features.iloc[[-1]]
                 prediction = predict_daily_close(model, last_row)
@@ -342,7 +362,7 @@ with tab2:
             # Display Prediction
             col1, col2, col3 = st.columns(3)
             col1.metric("Current Price", f"${current_price:,.2f}")
-            col2.metric(f"Predicted {timeframe_view}", f"${prediction:,.2f}", delta=f"{prediction-current_price:,.2f}")
+            col2.metric(f"Predicted {internal_timeframe}", f"${prediction:,.2f}", delta=f"{prediction-current_price:,.2f}")
             col3.metric("Target Time", target_time_display)
             
             # Edge Finder (Deep Dive specific)
