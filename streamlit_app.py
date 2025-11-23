@@ -149,6 +149,7 @@ def run_scanner(timeframe_override=None):
                 s['Time'] = time_str
                 s['Timeframe'] = best_tf # Add this so user knows
                 s['Numeric_Prob'] = float(s['Prob'].strip('%'))
+                s['RMSE'] = rmse_scan # Add RMSE for Reliability Badge
                 all_strikes.append(s)
                 
             for r in signals['ranges']:
@@ -326,62 +327,19 @@ else:
 
 st.markdown("---")
 
-# === SCANNER TABLE (Master) ===
-st.markdown("### 📊 Live Scanner")
-
-# Filter strikes for selected asset
-asset_strikes_table = [s for s in all_strikes if s['Asset'] == selected_ticker]
-
-if asset_strikes_table:
-    df_strikes = pd.DataFrame(asset_strikes_table)
-    
-    # SORTING: Best Probability (highest confidence)
-    df_strikes['Edge_Abs'] = abs(df_strikes['Numeric_Prob'] - 50)
-    df_strikes = df_strikes.sort_values('Edge_Abs', ascending=False)
-    
-    # Add index column for selection
-    df_strikes = df_strikes.reset_index(drop=True)
-    df_strikes.insert(0, 'Select', df_strikes.index)
-    
-    # Display columns
-    cols = ['Select', 'Timeframe', 'Date', 'Time', 'Strike', 'Prob', 'Action']
-    
-    def highlight_edge(row):
-        prob = float(row['Prob'].strip('%'))
-        if prob > 70:
-            return ['background-color: #1b4d1b'] * len(row)
-        elif prob < 30:
-            return ['background-color: #4d1b1b'] * len(row)
-        return [''] * len(row)
-
-    st.dataframe(
-        df_strikes[cols].style.apply(highlight_edge, axis=1), 
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    # Row selection input
-    st.markdown("---")
-    selected_row_idx = st.number_input(
-        "🔍 Select Row for Deep Dive (enter number from 'Select' column)",
-        min_value=0,
-        max_value=len(df_strikes) - 1,
-        value=0,
-        step=1,
-        key="row_selector"
-    )
-    
-    # === INLINE DEEP DIVE (Detail) ===
-    if selected_row_idx is not None and selected_row_idx < len(df_strikes):
-        selected_strike = df_strikes.iloc[selected_row_idx]
-        
+# === DEEP DIVE SECTION (Master Detail) ===
+if 'selected_strike' in st.session_state and st.session_state.selected_strike:
+    selected_strike = st.session_state.selected_strike
+    # Ensure it matches current asset to avoid confusion
+    if selected_strike['Asset'] == selected_ticker:
+        st.markdown("---")
         with st.expander(f"🔍 Deep Dive: {selected_strike['Action']} at {selected_strike['Strike']}", expanded=True):
             st.markdown(f"### Analysis for {selected_strike['Asset']} - {selected_strike['Timeframe']}")
             st.caption(f"Target: {selected_strike['Date']} at {selected_strike['Time']}")
             
             # Fetch fresh data for bell curve
             try:
-                if selected_strike['Timeframe'] == "Daily":
+                if selected_strike['Timeframe'] == "Daily" or selected_strike['Timeframe'] == "End of Day":
                     df_deep = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
                     model_deep = load_daily_model(ticker=selected_ticker)
                     if not df_deep.empty and model_deep:
@@ -408,7 +366,8 @@ if asset_strikes_table:
                 strike_price = float(strike_str.replace('>', '').replace('$', '').replace(',', '').strip())
                 
                 # Calculate probability using the model's prediction distribution
-                prob_val = calculate_probability(pred_deep, rmse_deep, strike_price, selected_strike['Action'])
+                # FIX: Removed 4th argument (current_price) which caused TypeError
+                prob_val = calculate_probability(pred_deep, strike_price, rmse_deep)
                 
                 # Create bell curve visualization
                 st.markdown("#### 📊 Probability Distribution")
@@ -434,7 +393,7 @@ if asset_strikes_table:
                 ))
                 
                 # Highlight the region based on action
-                if selected_strike['Action'] == 'Call':
+                if "BUY YES" in selected_strike['Action']:
                     # Shade area above strike
                     mask = x >= strike_price
                     fig.add_trace(go.Scatter(
@@ -445,7 +404,7 @@ if asset_strikes_table:
                         line=dict(color='#1b4d1b', width=0),
                         fillcolor='rgba(27, 77, 27, 0.3)'
                     ))
-                else:  # Put
+                else:  # BUY NO
                     # Shade area below strike
                     mask = x <= strike_price
                     fig.add_trace(go.Scatter(
@@ -481,9 +440,126 @@ if asset_strikes_table:
                 
             except Exception as e:
                 st.error(f"Unable to load Deep Dive data: {e}")
+
+st.markdown("---")
+
+# === OPPORTUNITY BOARD (Sectioned Cards) ===
+st.markdown("### 📋 Trade Opportunity Board")
+
+# Filter strikes for selected asset
+asset_strikes_board = [s for s in all_strikes if s['Asset'] == selected_ticker]
+asset_ranges_board = [r for r in all_ranges if r['Asset'] == selected_ticker]
+
+# Tabs for Sections
+tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly Snipes", "📅 Daily Close", "🎯 Ranges"])
+
+with tab_hourly:
+    st.caption("Short-term opportunities expiring in < 60 mins")
+    hourly_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Hourly"]
+    
+    if hourly_ops:
+        # Sort by Edge (Confidence)
+        hourly_ops.sort(key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)
         
-else:
-    st.info(f"No strike opportunities found for {selected_ticker}. Try refreshing data.")
+        for i, op in enumerate(hourly_ops):
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([2, 2, 1])
+                
+                # Reliability Badge Logic
+                rmse_val = op.get('RMSE', 15.0)
+                # SPX/NDX have high RMSE (10-30), others lower. 
+                # User rule: < 5.0 High Precision, > 10.0 Volatile.
+                # We'll stick to that strictly.
+                if rmse_val < 5.0:
+                    badge = "✅ High Precision Model"
+                elif rmse_val > 10.0:
+                    badge = "⚠️ Volatile Model"
+                else:
+                    badge = "ℹ️ Normal Volatility"
+                
+                with c1:
+                    st.markdown(f"### {op['Strike']}")
+                    st.caption(f"Expires: {op['Time']}")
+                
+                with c2:
+                    # Calculate Edge/Confidence for display
+                    prob = op['Numeric_Prob']
+                    if prob > 50:
+                        conf = prob
+                        signal = "BUY YES"
+                    else:
+                        conf = 100 - prob
+                        signal = "BUY NO"
+                    
+                    st.metric("Confidence", f"{conf:.1f}%", f"{signal}")
+                    st.caption(badge)
+                
+                with c3:
+                    st.write("") # Spacer
+                    if st.button("Deep Dive", key=f"dd_h_{i}_{op['Strike']}"):
+                        st.session_state.selected_strike = op
+                        st.rerun()
+    else:
+        st.info("No Hourly opportunities found.")
+
+with tab_daily:
+    st.caption("End-of-day predictions (4:00 PM Close)")
+    daily_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Daily" or s['Timeframe'] == "End of Day"]
+    
+    if daily_ops:
+        daily_ops.sort(key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)
+        
+        for i, op in enumerate(daily_ops):
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([2, 2, 1])
+                
+                # Reliability Badge
+                rmse_val = op.get('RMSE', 15.0)
+                if rmse_val < 5.0:
+                    badge = "✅ High Precision Model"
+                elif rmse_val > 10.0:
+                    badge = "⚠️ Volatile Model"
+                else:
+                    badge = "ℹ️ Normal Volatility"
+                
+                with c1:
+                    st.markdown(f"### {op['Strike']}")
+                    st.caption(f"Target: {op['Date']} Close")
+                
+                with c2:
+                    prob = op['Numeric_Prob']
+                    if prob > 50:
+                        conf = prob
+                        signal = "BUY YES"
+                    else:
+                        conf = 100 - prob
+                        signal = "BUY NO"
+                    
+                    st.metric("Confidence", f"{conf:.1f}%", f"{signal}")
+                    st.caption(badge)
+                
+                with c3:
+                    st.write("")
+                    if st.button("Deep Dive", key=f"dd_d_{i}_{op['Strike']}"):
+                        st.session_state.selected_strike = op
+                        st.rerun()
+    else:
+        st.info("No Daily opportunities found.")
+
+with tab_ranges:
+    st.caption("Volatility plays: Will price stay within range?")
+    if asset_ranges_board:
+        for i, r in enumerate(asset_ranges_board):
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    st.markdown(f"### {r['Range']}")
+                    st.write(f"Predicted In Range: **{r['Predicted In Range?']}**")
+                with c2:
+                    st.caption(f"Action: {r['Action']}")
+    else:
+        st.info("No Range opportunities found.")
+
 
 st.markdown("---")
 
