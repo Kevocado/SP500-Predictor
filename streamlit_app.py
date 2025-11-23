@@ -114,6 +114,13 @@ with tab1:
                     
                 st.caption(f"Model Uncertainty (RMSE): ±${rmse:.2f}")
                 
+                with st.expander("ℹ️ How it works"):
+                    st.markdown("""
+                    **The Model:** Uses LightGBM to predict the exact closing price of the next hour based on recent price action and technical indicators.
+                    
+                    **RMSE:** The "margin of error". If RMSE is ±$5, the model thinks the price is likely within $5 of the prediction.
+                    """)
+                
                 st.markdown("---")
                 st.subheader("🧮 Calculator")
                 # Interactive Calculator
@@ -129,6 +136,11 @@ with tab1:
                         st.error("High Probability of NO")
                     else:
                         st.warning("Uncertain / Toss-up")
+                        
+                with st.expander("ℹ️ How to use"):
+                    st.markdown("""
+                    **Custom Probability:** Enter any strike price (e.g., from Kalshi or Webull) to see the model's calculated probability of the price closing **ABOVE** that level.
+                    """)
 
             with top_col2:
                 st.subheader("⚡ Live Opportunities")
@@ -157,6 +169,7 @@ with tab1:
                         action = "⚪ PASS"
                         
                     edge_data.append({
+                        "Time": time_str, # Add Time Column
                         "Strike": f"> ${strike}",
                         "Mkt Price": f"{market_price_cents}¢",
                         "Model %": f"{prob_yes:.1f}%",
@@ -165,6 +178,16 @@ with tab1:
                     })
                 
                 st.table(edge_data)
+                
+                with st.expander("ℹ️ How to read this table"):
+                    st.markdown("""
+                    **The Edge Finder:** Compares the Model's Probability against the Market Price (Simulated).
+                    
+                    *   **Edge:** The difference between our probability and the market's price. Positive edge means the contract is "cheap" relative to our model's confidence.
+                    *   **Action:** 
+                        *   **BUY YES:** Model is confident price will go HIGHER than strike, and market price is low.
+                        *   **BUY NO:** Model is confident price will stay LOWER, and market price for 'Yes' is too high.
+                    """)
 
             # --- BOTTOM SECTION: CONTEXT (CHART) ---
             st.markdown("---")
