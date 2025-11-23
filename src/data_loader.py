@@ -15,8 +15,16 @@ def fetch_data(ticker="SPY", period="1mo", interval="1m"):
     Returns:
         pd.DataFrame: DataFrame with Datetime index and OHLCV columns.
     """
-    print(f"Fetching data for {ticker}...")
-    data = yf.download(ticker, period=period, interval=interval, progress=False)
+    # Map friendly names to tickers
+    ticker_map = {
+        "SPX": "^GSPC",
+        "Nasdaq": "^NDX",
+        "SPY": "SPY"
+    }
+    symbol = ticker_map.get(ticker, ticker)
+    
+    print(f"Fetching data for {symbol}...")
+    data = yf.download(symbol, period=period, interval=interval, progress=False)
     
     if data.empty:
         print("No data found.")

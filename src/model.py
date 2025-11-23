@@ -6,16 +6,20 @@ import os
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-MODEL_PATH = "model/lgbm_model.pkl"
+MODEL_DIR = "model"
 
-def train_model(df, save_path=MODEL_PATH):
+def get_model_path(ticker):
+    return os.path.join(MODEL_DIR, f"lgbm_model_{ticker}.pkl")
+
+def train_model(df, ticker="SPY"):
     """
     Trains a LightGBM model to predict next hour close.
     
     Args:
         df (pd.DataFrame): Dataframe with features and target 'target_next_hour'.
-        save_path (str): Path to save the trained model.
+        ticker (str): Ticker name to save model for.
     """
+    save_path = get_model_path(ticker)
     # Define features and target
     target_col = 'target_next_hour'
     drop_cols = [target_col, 'cum_vol', 'cum_vol_price'] # Drop intermediate calc cols if any
@@ -70,24 +74,26 @@ def train_model(df, save_path=MODEL_PATH):
     print(f"Model saved to {save_path}")
     
     # Save feature names to ensure consistency during inference
-    joblib.dump(feature_cols, os.path.join(os.path.dirname(save_path), "features.pkl"))
+    joblib.dump(feature_cols, os.path.join(os.path.dirname(save_path), f"features_{ticker}.pkl"))
     
     return final_model
 
-def load_model(model_path=MODEL_PATH):
-    """Loads the trained model."""
+def load_model(ticker="SPY"):
+    """Loads the trained model for the given ticker."""
+    model_path = get_model_path(ticker)
     if not os.path.exists(model_path):
-        print("Model file not found.")
+        print(f"Model file {model_path} not found.")
         return None
     return joblib.load(model_path)
 
-def predict_next_hour(model, current_data_df):
+def predict_next_hour(model, current_data_df, ticker="SPY"):
     """
     Predicts the next hour close given the latest data.
     
     Args:
         model: Trained LightGBM model.
         current_data_df (pd.DataFrame): Dataframe containing the latest data points (needs history for features).
+        ticker (str): Ticker to load feature names for.
         
     Returns:
         float: Predicted price.
@@ -96,12 +102,12 @@ def predict_next_hour(model, current_data_df):
     # Assumes current_data_df has enough history for lag features
     
     # Load feature names
-    feature_names_path = os.path.join(os.path.dirname(MODEL_PATH), "features.pkl")
+    feature_names_path = os.path.join(MODEL_DIR, f"features_{ticker}.pkl")
     if os.path.exists(feature_names_path):
         feature_cols = joblib.load(feature_names_path)
     else:
         # Fallback if feature list missing (shouldn't happen if trained)
-        raise FileNotFoundError("Feature list not found. Train model first.")
+        raise FileNotFoundError(f"Feature list not found for {ticker}. Train model first.")
 
     # Get the last row of features
     last_row = current_data_df.iloc[[-1]][feature_cols]
