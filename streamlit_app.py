@@ -147,15 +147,30 @@ def display_market_context():
                 
             # Display
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🌪️ VIX", f"{vix_val:.2f}", f"{vix_delta:+.2f}", delta_color="inverse")
-            m2.metric("🏦 10Y Yield", f"{tnx_val:.2f}%")
-            m3.metric("₿ Volume", f"{btc_vol_b:.1f}B")
+            m1.metric(
+                "🌪️ VIX", 
+                f"{vix_val:.2f}", 
+                f"{vix_delta:+.2f}", 
+                delta_color="inverse",
+                help="Fear Index: <15 = Calm, 15-20 = Normal, >20 = High Fear. Rising VIX = Market Uncertainty."
+            )
+            m2.metric(
+                "🏦 10Y Yield", 
+                f"{tnx_val:.2f}%",
+                help="Interest Rate Proxy: Rising yields = Expensive borrowing, often bearish for growth stocks. Falling = Cheap money."
+            )
+            m3.metric(
+                "₿ Volume", 
+                f"{btc_vol_b:.1f}B",
+                help="Bitcoin Volume: High volume = Strong crypto activity. Low volume = Sleepy markets, lower conviction."
+            )
             
             with m4:
                 if is_high_vol:
                     st.error(f"{regime_icon} {regime}")
                 else:
                     st.success(f"{regime_icon} {regime}")
+
             
     except Exception as e:
         # Fail silently or show small error
@@ -205,6 +220,10 @@ def run_scanner(timeframe_override=None):
                 # --- KALSHI OVERLAY ---
                 # Fetch real markets
                 real_markets = get_real_kalshi_markets(ticker)
+                
+                # DEBUG: Log what we got
+                print(f"📊 Kalshi returned {len(real_markets)} markets for {ticker}")
+                
                 # Create a lookup for real prices: {strike_price: {'yes': ..., 'no': ...}}
                 # Note: Strike matching might be tricky due to float precision or exact values.
                 # We'll try to find the closest match or exact match.
@@ -212,6 +231,7 @@ def run_scanner(timeframe_override=None):
                 for rm in real_markets:
                     if rm.get('strike_price'):
                         real_market_map[float(rm['strike_price'])] = rm
+                        print(f"   Strike: {rm['strike_price']} | Yes Bid: {rm['yes_bid']} | No Bid: {rm['no_bid']}")
                 
                 for s in signals_daily['strikes']:
                     s['Asset'] = ticker
@@ -225,24 +245,26 @@ def run_scanner(timeframe_override=None):
                     # s['Strike'] is a string like "> $5,920". Need to parse number.
                     try:
                         strike_val = float(s['Strike'].replace('>','').replace('<','').replace('$','').replace(',','').strip())
-                        # Find match in real_market_map (exact or very close)
-                        # For now, simple exact match or closest?
-                        # Let's just check if it exists directly first.
+                        
+                        # Try exact match first
                         if strike_val in real_market_map:
                             rm = real_market_map[strike_val]
+                        else:
+                            # Fallback: Find nearest strike
+                            if real_market_map:
+                                nearest_strike = min(real_market_map.keys(), key=lambda x: abs(x - strike_val))
+                                rm = real_market_map[nearest_strike]
+                                print(f"⚠️ No exact match for {strike_val}, using nearest: {nearest_strike}")
+                            else:
+                                rm = None
+                        
+                        if rm:
                             s['Real_Yes_Bid'] = rm['yes_bid']
                             s['Real_No_Bid'] = rm['no_bid']
-                            # Recalculate Edge based on Real Price?
-                            # If Action is BUY YES: Edge = Model_Prob - Yes_Bid
-                            # If Action is BUY NO: Edge = (100 - Model_Prob) - No_Bid (Wait, No_Bid is cost to buy No)
-                            # Actually: Edge = Model_Prob_of_Winning - Cost_of_Bet
                             
                             model_prob_win = s['Numeric_Prob'] if "BUY YES" in s['Action'] else (100 - s['Numeric_Prob'])
                             cost = rm['yes_bid'] if "BUY YES" in s['Action'] else rm['no_bid']
                             
-                            # If cost is in cents (1-99), convert to % (0.01-0.99) or keep as is?
-                            # Model prob is 0-100. Cost is usually 1-99 cents.
-                            # So Edge = Model_Prob - Cost.
                             if cost > 0:
                                 s['Real_Edge'] = model_prob_win - cost
                                 s['Has_Real_Data'] = True
