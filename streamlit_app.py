@@ -352,6 +352,16 @@ with col_refresh:
 # Market Context Bar
 display_market_context()
 
+# DEBUG: Show Kalshi API Status on-screen
+with st.expander("🔍 Kalshi API Debug (Expand to see data)", expanded=False):
+    st.caption("This shows what data is being received from Kalshi.")
+    for ticker in ["SPX", "Nasdaq", "BTC", "ETH"]:
+        markets = get_real_kalshi_markets(ticker)
+        st.markdown(f"**{ticker}:** {len(markets)} markets found")
+        if markets:
+            for m in markets[:3]:  # Show first 3
+                st.caption(f"  Strike: {m.get('strike_price')} | Yes Bid: {m.get('yes_bid')}¢ | No Bid: {m.get('no_bid')}¢")
+
 st.markdown("---")
 
 # --- PILLS NAVIGATION (Asset Selector) ---

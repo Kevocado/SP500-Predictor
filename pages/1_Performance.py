@@ -34,7 +34,20 @@ if 'selected_asset' in st.session_state:
 else:
     selected_ticker = "SPX" # Default
 
-st.title(f"📈 Performance Analysis: {selected_ticker}")
+st.title(f"📈 Performance Analysis")
+
+# Asset Selector
+st.markdown("### Select Asset")
+selected_ticker = st.pills(
+    "Asset Selection",
+    options=["SPX", "Nasdaq", "BTC", "ETH"],
+    default=st.session_state.get('selected_asset', 'SPX'),
+    label_visibility="collapsed",
+    key="perf_asset_pills"
+)
+
+# Update session state
+st.session_state.selected_asset = selected_ticker
 
 # Determine timeframe
 recommended_tf = determine_best_timeframe(selected_ticker)
@@ -42,6 +55,7 @@ timeframe_map = {"Hourly": "Hourly", "Daily": "Daily"}
 internal_timeframe = timeframe_map.get(recommended_tf, "Daily")
 
 st.caption(f"Historical performance metrics for {selected_ticker} ({internal_timeframe})")
+
 
 # Fetch data for performance analysis
 try:
