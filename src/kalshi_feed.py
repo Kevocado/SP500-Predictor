@@ -20,9 +20,9 @@ def get_real_kalshi_markets(ticker):
     Returns a list of dictionaries with market data.
     """
     if not API_KEY:
-        print("Warning: KALSHI_API_KEY not found in environment variables.")
-        return []
-
+        print("ℹ️ KALSHI_API_KEY not found. Attempting public data fetch...")
+        # Proceed without key
+    
     # Map our tickers to Kalshi series tickers
     ticker_map = {
         "BTC": "KXBT",
