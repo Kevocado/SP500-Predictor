@@ -59,10 +59,20 @@ def evaluate_model(model, df, ticker="SPY"):
     # Calculate Rolling Accuracy (e.g., 60-minute rolling MAE)
     results['Rolling_MAE'] = results['Abs_Error'].rolling(window=60).mean()
     
+    # Calculate Directional Accuracy
+    # Did the model correctly predict if price would go up or down relative to the price at prediction time?
+    # We need the price at time T (when prediction was made).
+    # Since we shifted target by -60, the price at index T is the "current" price at time T.
+    results['Price_At_Pred'] = df_eval['Close']
+    results['Actual_Dir'] = np.sign(results['Actual'] - results['Price_At_Pred'])
+    results['Pred_Dir'] = np.sign(results['Predicted'] - results['Price_At_Pred'])
+    results['Correct_Dir'] = (results['Actual_Dir'] == results['Pred_Dir']).astype(int)
+    
     # Overall Metrics
     mae = mean_absolute_error(y_actual, y_pred)
     rmse = np.sqrt(mean_squared_error(y_actual, y_pred))
+    accuracy = results['Correct_Dir'].mean()
     
-    metrics = {'MAE': mae, 'RMSE': rmse}
+    metrics = {'MAE': mae, 'RMSE': rmse, 'Directional_Accuracy': accuracy, 'Correct_Count': results['Correct_Dir'].sum(), 'Total_Count': len(results)}
     
     return results, metrics

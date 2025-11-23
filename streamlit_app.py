@@ -65,7 +65,25 @@ with tab1:
                             low=df['Low'],
                             close=df['Close'],
                             name=selected_ticker))
-            fig.update_layout(title=f"{selected_ticker} Intraday Price (Last 5 Days)", xaxis_rangeslider_visible=False)
+            
+            # Hide non-trading periods (weekends and nights)
+            # Simple approach: use rangebreaks. 
+            # Note: This assumes US market hours. Adjust if using other data.
+            fig.update_xaxes(
+                rangebreaks=[
+                    dict(bounds=["sat", "mon"]), # hide weekends
+                    dict(values=["2025-12-25", "2026-01-01"]) # hide holidays (example)
+                    # dict(bounds=[16, 9.5], pattern="hour"), # hide hours outside 9:30am-4pm (requires careful tuning with timezones)
+                ]
+            )
+            # Alternative: Treat x-axis as category to remove ALL gaps automatically
+            # fig.update_xaxes(type='category') # This removes time scaling, might be too drastic for "next hour" visualization context
+            
+            fig.update_layout(
+                title=f"{selected_ticker} Intraday Price (Last 5 Days)", 
+                xaxis_rangeslider_visible=False,
+                height=500
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.error("Could not load market data.")
@@ -103,24 +121,34 @@ with tab2:
             
         if not results.empty:
             # Metrics Row
-            m1, m2 = st.columns(2)
-            m1.metric("Overall MAE (Mean Absolute Error)", f"${metrics['MAE']:.2f}")
-            m2.metric("Overall RMSE (Root Mean Sq Error)", f"${metrics['RMSE']:.2f}")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Overall MAE", f"${metrics['MAE']:.2f}", help="Mean Absolute Error: Average dollar error per prediction.")
+            m2.metric("Directional Accuracy", f"{metrics['Directional_Accuracy']:.1%}", help="Percentage of times the model correctly predicted the price direction (Up/Down).")
+            m3.metric("Correct Predictions", f"{metrics['Correct_Count']} / {metrics['Total_Count']}", help="Count of correct direction predictions.")
+            
+            st.markdown("---")
             
             # Graph 1: Actual vs Predicted
-            st.markdown("### Actual vs Predicted (Last 5 Days)")
+            st.markdown("### 1. Actual vs Predicted (Last 5 Days)")
+            st.caption("This graph compares the **Predicted Close** (orange dashed line) with the **Actual Close** (blue line) that happened 60 minutes later. A perfect model would have the lines overlapping perfectly.")
+            
             fig_perf = go.Figure()
-            fig_perf.add_trace(go.Scatter(x=results.index, y=results['Actual'], mode='lines', name='Actual Close (T+60)', line=dict(color='blue')))
-            fig_perf.add_trace(go.Scatter(x=results.index, y=results['Predicted'], mode='lines', name='Predicted Close', line=dict(color='orange', dash='dash')))
-            fig_perf.update_layout(xaxis_title="Time", yaxis_title="Price")
+            fig_perf.add_trace(go.Scatter(x=results.index, y=results['Actual'], mode='lines', name='Actual Close (T+60)', line=dict(color='#00B4D8', width=2)))
+            fig_perf.add_trace(go.Scatter(x=results.index, y=results['Predicted'], mode='lines', name='Predicted Close', line=dict(color='#FF9F1C', dash='dash', width=2)))
+            
+            fig_perf.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+            fig_perf.update_layout(xaxis_title="Time", yaxis_title="Price", height=500, hovermode="x unified")
             st.plotly_chart(fig_perf, use_container_width=True)
             
             # Graph 2: Rolling Accuracy
-            st.markdown("### Rolling Accuracy (60-min MAE)")
-            st.caption("Lower is better. Shows the average error in dollars over the last hour.")
+            st.markdown("### 2. Rolling Accuracy (60-min MAE)")
+            st.caption("This graph shows the **Average Error** in dollars over the last 60 minutes. **Lower is better.** Spikes indicate periods where the model struggled (e.g., high volatility news events).")
+            
             fig_acc = go.Figure()
-            fig_acc.add_trace(go.Scatter(x=results.index, y=results['Rolling_MAE'], mode='lines', name='Rolling MAE', line=dict(color='red')))
-            fig_acc.update_layout(xaxis_title="Time", yaxis_title="Error ($)")
+            fig_acc.add_trace(go.Scatter(x=results.index, y=results['Rolling_MAE'], mode='lines', name='Rolling MAE', line=dict(color='#EF476F', width=2), fill='tozeroy'))
+            
+            fig_acc.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+            fig_acc.update_layout(xaxis_title="Time", yaxis_title="Error ($)", height=400, hovermode="x unified")
             st.plotly_chart(fig_acc, use_container_width=True)
             
         else:
