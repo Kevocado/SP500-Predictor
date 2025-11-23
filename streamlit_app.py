@@ -54,7 +54,7 @@ from src.model import load_model, predict_next_hour, calculate_probability, get_
 from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
 from src.signals import generate_trading_signals
 from src.azure_logger import log_prediction, fetch_all_logs
-from datetime import timedelta
+from datetime import timedelta, time
 
 def check_daily_range(predicted_price, ranges_list):
     """
@@ -124,16 +124,32 @@ with tab1:
                 
                 curr_price_scan = df_scan['Close'].iloc[-1]
                 
+                # Time Info
+                last_time = df_scan.index[-1]
+                if timeframe_view == "Daily":
+                    target_time = last_time.replace(hour=16, minute=0, second=0, microsecond=0)
+                    if last_time.time() >= time(16, 0):
+                        target_time += timedelta(days=1)
+                else:
+                    target_time = last_time + timedelta(hours=1)
+                
+                date_str = target_time.strftime("%b %d")
+                time_str = target_time.strftime("%I:%M %p")
+                
                 # Generate Signals
                 signals = generate_trading_signals(ticker, pred_scan, curr_price_scan, rmse_scan)
                 
                 # Add Ticker info to signals
                 for s in signals['strikes']:
                     s['Asset'] = ticker
+                    s['Date'] = date_str
+                    s['Time'] = time_str
                     all_strikes.append(s)
                     
                 for r in signals['ranges']:
                     r['Asset'] = ticker
+                    r['Date'] = date_str
+                    r['Time'] = time_str
                     all_ranges.append(r)
                     
             except Exception as e:
@@ -149,7 +165,10 @@ with tab1:
         with scan_tab1:
             if all_strikes:
                 st.caption(f"Directional opportunities based on {timeframe_view} prediction.")
-                st.dataframe(all_strikes, use_container_width=True)
+                # Reorder columns
+                df_strikes = pd.DataFrame(all_strikes)
+                cols = ['Asset', 'Date', 'Time', 'Strike', 'Prob', 'Action']
+                st.dataframe(df_strikes[cols], use_container_width=True)
             else:
                 st.info("No active strike opportunities found.")
                 
@@ -162,16 +181,25 @@ with tab1:
                     return ['background-color: #1b4d1b' if row['Is_Winner'] else '' for _ in row]
                 
                 df_ranges = pd.DataFrame(all_ranges)
-                # Drop the boolean column for display if desired, or keep it
+                cols = ['Asset', 'Date', 'Time', 'Range', 'Predicted In Range?', 'Action', 'Is_Winner']
                 # Applying style
-                st.dataframe(df_ranges.style.apply(highlight_winner, axis=1), use_container_width=True)
+                st.dataframe(df_ranges[cols].style.apply(highlight_winner, axis=1), use_container_width=True)
             else:
                 st.info("No range opportunities found.")
             
-    with st.expander("ℹ️ Guide: Which Timeframe to use?"):
+    with st.expander("ℹ️ Guide: How to trade with Kalshi / Webull"):
         st.markdown("""
-        *   **Hourly (Standard):** Use this for standard prediction markets (e.g., "Will BTC be > X at 2:00 PM?"). The model predicts the price 60 minutes from now.
-        *   **Daily (Close):** Use this for "Daily Close" markets (e.g., "Will SPX close > X today?"). The model predicts the price at 4:00 PM ET.
+        ### 🎯 Strike Prices (Direction)
+        *   **What it is:** Simple "Yes/No" contracts. e.g., "Will BTC be > $98,000?"
+        *   **How to use:** 
+            *   If the scanner says **🟢 BUY YES**, look for the contract with that Strike Price and buy "Yes".
+            *   If the scanner says **🔴 BUY NO**, look for the contract and buy "No" (or sell "Yes").
+        
+        ### 📊 Daily Ranges (Volatility)
+        *   **What it is:** "Range" or "Bracket" contracts. e.g., "Will BTC close between $98k and $99k?"
+        *   **How to use:**
+            *   Look for the row highlighted in **Green**. This is the model's predicted target zone.
+            *   On Kalshi/Webull, find the "Range" market for that asset and buy the contract that matches these numbers.
         """)
             
     st.markdown("---")
@@ -417,8 +445,12 @@ with tab2:
     st.subheader("Model Accuracy Over Time")
     
     if model is not None and not df.empty:
-        with st.spinner("Calculating historical performance..."):
-            results, metrics, daily_metrics = evaluate_model(model, df, ticker=selected_ticker)
+        if timeframe_view == "Daily":
+            st.info("⚠️ Historical Model Performance metrics are currently optimized for the Hourly model only. Daily model metrics coming soon.")
+            results = pd.DataFrame() # Empty results to skip downstream logic
+        else:
+            with st.spinner("Calculating historical performance..."):
+                results, metrics, daily_metrics = evaluate_model(model, df, ticker=selected_ticker)
             
         if not results.empty:
             # Metrics Row
