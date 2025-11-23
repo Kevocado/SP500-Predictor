@@ -64,9 +64,15 @@ with tab1:
 
     with col1:
         st.subheader(f"Live Market Data ({selected_ticker})")
+        
+        # Timeframe Selector
+        timeframe = st.radio("Timeframe", ["1 Day", "3 Days", "5 Days"], index=1, horizontal=True)
+        period_map = {"1 Day": "1d", "3 Days": "3d", "5 Days": "5d"}
+        selected_period = period_map[timeframe]
+        
         # Fetch latest data
         with st.spinner("Loading data..."):
-            df = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
+            df = fetch_data(ticker=selected_ticker, period=selected_period, interval="1m")
             
         if not df.empty:
             # Plotting
@@ -82,12 +88,13 @@ with tab1:
             fig.update_xaxes(
                 rangebreaks=[
                     dict(bounds=["sat", "mon"]), # hide weekends
-                    dict(values=["2025-12-25", "2026-01-01"]) # hide holidays (example)
+                    dict(values=["2025-12-25", "2026-01-01"]), # hide holidays (example)
+                    dict(pattern="hour", bounds=[16, 9.5]) # hide hours outside 9:30am-4pm
                 ]
             )
             
             fig.update_layout(
-                title=f"{selected_ticker} Intraday Price (Last 5 Days)", 
+                title=f"{selected_ticker} Intraday Price ({timeframe})", 
                 xaxis_rangeslider_visible=False,
                 height=500,
                 margin=dict(l=0, r=0, t=30, b=0)
