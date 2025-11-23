@@ -235,14 +235,21 @@ def categorize_markets(markets, ticker):
                     buckets['hourly'].append(m)
                 continue
 
-            # Daily: expires within 7 days (more flexible to show available markets)
-            # Original logic was too strict (only same day 15-23h)
-            if 0 < time_diff_days <= 7:
+            # Daily: expires within 14 days (more flexible to show available markets)
+            # Extended to 14 days to catch markets that expire a week+ out
+            if 0 < time_diff_days <= 14:
                 buckets['daily'].append(m)
                 continue
 
         except Exception as e:
             print(f"Error categorizing market: {e}")
+    
+    # Debug logging
+    print(f"📊 Categorization for {ticker}:")
+    print(f"   Hourly: {len(buckets['hourly'])} markets")
+    print(f"   Daily: {len(buckets['daily'])} markets")
+    print(f"   Range: {len(buckets['range'])} markets")
+    print(f"   Current NY time: {now_ny.strftime('%Y-%m-%d %H:%M %Z')}")
 
     return buckets
 
@@ -284,6 +291,12 @@ def run_scanner(timeframe_override=None):
             # Daily Model
             df_daily = fetch_data(ticker=ticker, period="60d", interval="1h")
             model_daily = load_daily_model(ticker=ticker)
+            
+            # Debug: Log bucket contents
+            print(f"\n🔍 Scanner processing {ticker}:")
+            print(f"   Hourly bucket: {len(buckets['hourly'])} markets, Model: {model_hourly is not None}, Data: {len(df_hourly) if not df_hourly.empty else 0} rows")
+            print(f"   Daily bucket: {len(buckets['daily'])} markets, Model: {model_daily is not None}, Data: {len(df_daily) if not df_daily.empty else 0} rows")
+            print(f"   Range bucket: {len(buckets['range'])} markets")
             
             # 3. Process Hourly Bucket
             if not df_hourly.empty and model_hourly and buckets['hourly']:
