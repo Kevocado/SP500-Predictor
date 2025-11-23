@@ -87,3 +87,47 @@ def log_prediction(prediction, current_price, rmse, edge_data, ticker="SPX"):
         
     except Exception as e:
         print(f"Failed to log to Azure: {e}")
+
+def fetch_all_logs():
+    """
+    Fetches all prediction logs from Azure Blob Storage and merges them into a single DataFrame.
+    
+    Returns:
+        pd.DataFrame: Merged DataFrame containing all history.
+    """
+    if not CONNECTION_STRING:
+        return pd.DataFrame()
+
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        
+        if not container_client.exists():
+            return pd.DataFrame()
+            
+        all_dfs = []
+        blob_list = container_client.list_blobs()
+        
+        for blob in blob_list:
+            if blob.name.startswith("predictions_") and blob.name.endswith(".csv"):
+                blob_client = container_client.get_blob_client(blob.name)
+                downloaded_blob = blob_client.download_blob()
+                csv_data = downloaded_blob.readall().decode('utf-8')
+                df = pd.read_csv(StringIO(csv_data))
+                all_dfs.append(df)
+                
+        if not all_dfs:
+            return pd.DataFrame()
+            
+        full_df = pd.concat(all_dfs, ignore_index=True)
+        
+        # Convert timestamp to datetime
+        if 'timestamp_utc' in full_df.columns:
+            full_df['timestamp_utc'] = pd.to_datetime(full_df['timestamp_utc'])
+            full_df = full_df.sort_values('timestamp_utc')
+            
+        return full_df
+        
+    except Exception as e:
+        print(f"Error fetching logs: {e}")
+        return pd.DataFrame()

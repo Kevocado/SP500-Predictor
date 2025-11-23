@@ -45,7 +45,7 @@ if st.sidebar.button("Retrain Model"):
 from src.evaluation import evaluate_model
 from src.utils import get_market_status
 from src.model import load_model, predict_next_hour, calculate_probability, get_recent_rmse
-from src.azure_logger import log_prediction
+from src.azure_logger import log_prediction, fetch_all_logs
 from datetime import timedelta
 
 
@@ -63,7 +63,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-tab1, tab2 = st.tabs(["Live Prediction", "Model Performance"])
+tab1, tab2, tab3 = st.tabs(["Live Prediction", "Model Performance", "📜 History (Azure)"])
 
 with tab1:
     # 1. Data Fetching & Prediction (Do this first so we have variables for the UI)
@@ -301,6 +301,70 @@ with tab2:
             st.warning("Not enough data to calculate performance.")
     else:
         st.warning("Model or data not available.")
+
+with tab3:
+    st.subheader("☁️ Azure Audit Trail & Analytics")
+    st.markdown("This dashboard pulls live historical data from your **Azure Data Lake** to monitor model performance in production.")
+    
+    if st.button("Refresh Data from Azure"):
+        st.cache_data.clear()
+        
+    with st.spinner("Fetching logs from Azure..."):
+        history_df = fetch_all_logs()
+        
+    if not history_df.empty:
+        # Filter by selected ticker
+        ticker_history = history_df[history_df['ticker'] == selected_ticker].copy()
+        
+        if not ticker_history.empty:
+            # 1. KPI Metrics
+            kpi1, kpi2, kpi3 = st.columns(3)
+            total_preds = len(ticker_history)
+            avg_rmse = ticker_history['model_rmse'].mean()
+            
+            # Calculate PnL (Simulation)
+            # Logic: If Action != PASS, we bet $100.
+            # Win condition: If Action is BUY YES, did price > strike?
+            # We need ACTUAL price at expiry to calculate real PnL.
+            # Since we only log at prediction time, we might not have the result yet.
+            # For this MVP, let's just show the "Edge" capture potential or simple stats.
+            # Or we can try to match it with historical data if available.
+            # Let's stick to "Edge Captured" for now.
+            
+            avg_edge = ticker_history['best_edge_val'].mean()
+            
+            kpi1.metric("Total Predictions", total_preds)
+            kpi2.metric("Avg Model RMSE", f"${avg_rmse:.2f}")
+            kpi3.metric("Avg Edge Found", f"{avg_edge:.1f}%")
+            
+            st.markdown("---")
+            
+            # 2. Charts
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                st.markdown("### 📉 Predicted vs Actual (at time of request)")
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Scatter(x=ticker_history['timestamp_utc'], y=ticker_history['current_price'], name='Actual Price', line=dict(color='#00B4D8')))
+                fig_hist.add_trace(go.Scatter(x=ticker_history['timestamp_utc'], y=ticker_history['predicted_price'], name='Predicted', line=dict(color='#FF9F1C', dash='dash')))
+                fig_hist.update_layout(title="Price History", height=350, margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_hist, use_container_width=True)
+                
+            with col_chart2:
+                st.markdown("### 📊 Error Distribution (RMSE)")
+                fig_dist = go.Figure()
+                fig_dist.add_trace(go.Histogram(x=ticker_history['model_rmse'], nbinsx=20, marker_color='#EF476F'))
+                fig_dist.update_layout(title="Model Uncertainty Distribution", xaxis_title="RMSE ($)", height=350, margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_dist, use_container_width=True)
+            
+            # 3. Raw Data
+            with st.expander("View Raw Audit Logs"):
+                st.dataframe(ticker_history.sort_values('timestamp_utc', ascending=False), use_container_width=True)
+                
+        else:
+            st.info(f"No history found for {selected_ticker} yet. Make some predictions!")
+    else:
+        st.warning("No logs found in Azure. Check your connection string or make some predictions first.")
 
 st.markdown("---")
 st.markdown("### Model Info")
