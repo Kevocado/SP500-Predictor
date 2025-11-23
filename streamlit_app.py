@@ -509,6 +509,18 @@ col_feed, col_analysis = st.columns([1, 2], gap="medium")
 with col_feed:
     st.markdown("### 📋 Trade Opportunity Board")
     
+    # Legend Tile
+    with st.container(border=True):
+        l1, l2, l3, l4 = st.columns(4)
+        l1.caption("🟢 BUY / 🔴 SELL")
+        l1.markdown("**Buy at Ask / Sell at Bid**")
+        l2.caption("🎯 ITM (In The Money)")
+        l2.markdown("**Winning (Price > Strike)**")
+        l3.caption("📉 OTM (Out The Money)")
+        l3.markdown("**Chasing (Price < Strike)**")
+        l4.caption("🔥 Edge")
+        l4.markdown("**Model Prob - Market Price**")
+
     # Tabs for Sections
     tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly Snipes", "📅 Daily Close", "🎯 Ranges"])
 
@@ -519,6 +531,9 @@ with tab_hourly:
     if hourly_ops:
         # Sort by Edge (Confidence)
         hourly_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
+        
+        # Limit to Top 5
+        hourly_ops = hourly_ops[:5]
         
         for i, op in enumerate(hourly_ops):
             # Highlight top 3 Alpha Picks
@@ -555,7 +570,7 @@ with tab_hourly:
                         
                         if not is_buy_yes: # BUY NO
                             if curr < strike_val:
-                                badge_text = "📉 OTM (Safe)"
+                                badge_text = "📉 OTM"
                                 badge_color = "green"
                             else:
                                 badge_text = "⚠️ ITM (Risk)"
@@ -594,11 +609,15 @@ with tab_hourly:
                     if op.get('Has_Real_Data'):
                         bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
                         ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
-                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price_cents}¢"
+                        
+                        bid_str = f"{bid_price}¢" if bid_price else "No Liq"
+                        ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Liq"
+                        
+                        price_str = f"Bid: {bid_str} | Ask: {ask_str}"
                     else:
                         bid_price = None
                         ask_price_cents = None
-                        price_str = "Bid: -- | Ask: --"
+                        price_str = "Bid: No Liq | Ask: No Liq"
 
                     st.markdown(f"**{price_str}**")
                     st.caption("Buy at Ask / Sell at Bid")
@@ -612,11 +631,13 @@ with tab_hourly:
                         profit = potential_payout - wager
                         profit_text = f"+${profit:.2f}"
                         profit_color = "green"
+                        pnl_help = "If you bet $100 and win, you get your $100 back + this Profit amount. (Payout is always $1.00 per contract)."
                     else:
                         profit_text = "—"
                         profit_color = "grey"
+                        pnl_help = "No liquidity to calculate PnL."
                     
-                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**")
+                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**", help=pnl_help)
                     
                     # Model Value
                     model_val = int(conf) # roughly cents
@@ -645,6 +666,9 @@ with tab_daily:
     if daily_ops:
         daily_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
         
+        # Limit to Top 5
+        daily_ops = daily_ops[:5]
+        
         for i, op in enumerate(daily_ops):
             # Highlight top 3 Alpha Picks
             alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
@@ -671,7 +695,7 @@ with tab_daily:
                     if curr > 0:
                         if not is_buy_yes: # BUY NO
                             if curr < strike_val:
-                                badge_text = "📉 OTM (Safe)"
+                                badge_text = "📉 OTM"
                                 badge_color = "green"
                             else:
                                 badge_text = "⚠️ ITM (Risk)"
@@ -705,11 +729,15 @@ with tab_daily:
                     if op.get('Has_Real_Data'):
                         bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
                         ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
-                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price_cents}¢"
+                        
+                        bid_str = f"{bid_price}¢" if bid_price else "No Liq"
+                        ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Liq"
+                        
+                        price_str = f"Bid: {bid_str} | Ask: {ask_str}"
                     else:
                         bid_price = None
                         ask_price_cents = None
-                        price_str = "Bid: -- | Ask: --"
+                        price_str = "Bid: No Liq | Ask: No Liq"
                     
                     st.markdown(f"**{price_str}**")
                     st.caption("Buy at Ask / Sell at Bid")
@@ -723,11 +751,13 @@ with tab_daily:
                         profit = potential_payout - wager
                         profit_text = f"+${profit:.2f}"
                         profit_color = "green"
+                        pnl_help = "If you bet $100 and win, you get your $100 back + this Profit amount. (Payout is always $1.00 per contract)."
                     else:
                         profit_text = "—"
                         profit_color = "grey"
+                        pnl_help = "No liquidity to calculate PnL."
                     
-                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**")
+                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**", help=pnl_help)
                     
                     # Model Value
                     model_val = int(conf)

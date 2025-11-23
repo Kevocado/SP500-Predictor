@@ -55,14 +55,28 @@ def get_real_kalshi_markets(ticker):
         
         print(f"   Response Status: {response.status_code}")
         
-        if response.status_code != 200:
-            print(f"❌ Error fetching Kalshi data: {response.status_code}")
-            print(f"   Response: {response.text[:200]}")
-            return []
-            
-        data = response.json()
-        markets = data.get('markets', [])
+        markets = []
+        if response.status_code == 200:
+            data = response.json()
+            markets = data.get('markets', [])
         
+        # Fallback Logic: If no markets found with series filter, try broad fetch
+        if not markets:
+            print(f"⚠️ No markets found for series {series_ticker}. Attempting fallback fetch...")
+            fallback_params = {
+                "limit": 100,
+                "status": "open"
+            }
+            fb_response = requests.get(KALSHI_API_URL, params=fallback_params, headers=headers if API_KEY else None)
+            if fb_response.status_code == 200:
+                fb_data = fb_response.json()
+                all_markets = fb_data.get('markets', [])
+                # Filter manually by ticker symbol
+                markets = [m for m in all_markets if ticker in m.get('ticker', '')]
+                print(f"   Fallback found {len(markets)} markets for {ticker}")
+            else:
+                print(f"❌ Fallback fetch failed: {fb_response.status_code}")
+
         print(f"   Total markets returned: {len(markets)}")
         
         results = []
