@@ -114,3 +114,58 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
     
     prediction = model.predict(last_row)
     return prediction[0]
+
+import scipy.stats as stats
+import numpy as np
+from sklearn.metrics import mean_squared_error
+
+def calculate_probability(predicted_price, strike_price, model_rmse):
+    """
+    Returns the % probability that price will be ABOVE the strike.
+    
+    Args:
+        predicted_price (float): The model's predicted price.
+        strike_price (float): The target strike price.
+        model_rmse (float): The Root Mean Squared Error of the model (standard deviation of error).
+        
+    Returns:
+        float: Probability (0-100) that price > strike.
+    """
+    if model_rmse == 0:
+        return 100.0 if predicted_price > strike_price else 0.0
+        
+    # Z-Score: How many standard deviations is the strike away from our prediction?
+    # We want Prob(Price > Strike).
+    # If Pred (5915) > Strike (5910), we expect high probability.
+    # Z = (Pred - Strike) / RMSE
+    # Example: (5915 - 5910) / 5 = 1.0. CDF(1.0) = ~0.84.
+    # So there is an 84% chance the price is ABOVE the strike.
+    z_score = (predicted_price - strike_price) / model_rmse
+    
+    # CDF gives prob that variable is LESS than Z. 
+    # But here we constructed Z such that positive Z means Pred > Strike.
+    # Standard Normal CDF of 1.0 is 0.84.
+    # So we can just use cdf(z_score).
+    probability_above = stats.norm.cdf(z_score)
+    
+    return probability_above * 100
+
+def get_recent_rmse(model, df, ticker="SPY"):
+    """
+    Calculates the RMSE of the model on the provided dataframe.
+    If df is small, returns a default value.
+    """
+    from .evaluation import evaluate_model
+    
+    if df.empty or len(df) < 60: # Need enough data for lags and target
+        # Return default RMSEs based on ticker volatility if data is insufficient
+        defaults = {"SPX": 15.0, "Nasdaq": 25.0, "SPY": 1.5, "^GSPC": 15.0, "^NDX": 25.0}
+        return defaults.get(ticker, 5.0)
+        
+    try:
+        _, metrics, _ = evaluate_model(model, df, ticker=ticker)
+        return metrics.get('RMSE', 5.0)
+    except Exception:
+        # Fallback
+        defaults = {"SPX": 15.0, "Nasdaq": 25.0, "SPY": 1.5, "^GSPC": 15.0, "^NDX": 25.0}
+        return defaults.get(ticker, 5.0)

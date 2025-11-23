@@ -40,6 +40,7 @@ if st.sidebar.button("Retrain Model"):
 
 from src.evaluation import evaluate_model
 from src.utils import get_market_status
+from src.model import load_model, predict_next_hour, calculate_probability, get_recent_rmse
 from datetime import timedelta
 
 # ... (Previous code remains)
@@ -123,15 +124,10 @@ with tab1:
                 last_time = df.index[-1]
                 target_time = last_time + timedelta(hours=1)
                 
-                # Format time nicely (e.g., "3:00 PM Today")
+                # Format time nicely
                 now_day = last_time.date()
                 target_day = target_time.date()
-                
-                if now_day == target_day:
-                    day_str = "Today"
-                else:
-                    day_str = target_time.strftime("%A") # e.g. Monday
-                    
+                day_str = "Today" if now_day == target_day else target_time.strftime("%A")
                 time_str = target_time.strftime("%I:%M %p")
                 target_time_display = f"{time_str} {day_str}"
                 
@@ -140,6 +136,76 @@ with tab1:
                 
                 st.info(f"🎯 **Target Time:** {target_time_display}\n\n(Based on data from {last_time.strftime('%I:%M %p')})")
                 
+                # --- EDGE FINDER SECTION ---
+                st.markdown("---")
+                st.subheader("⚡ Prediction Market Edge Finder")
+                
+                # 1. Calculate RMSE
+                rmse = get_recent_rmse(model, df, ticker=selected_ticker)
+                st.caption(f"Model Uncertainty (RMSE): ±${rmse:.2f}")
+                
+                # 2. Market Simulator (Generate Strikes)
+                # Generate strikes around current price (e.g., +/- 0.1%, 0.2%...)
+                # Or just fixed points. Let's use fixed points relative to current price.
+                # Round current price to nearest 10
+                base_price = round(current_price / 10) * 10
+                strikes = []
+                for i in range(-2, 3): # -20, -10, 0, +10, +20
+                    strikes.append(base_price + (i * 10))
+                
+                edge_data = []
+                for strike in strikes:
+                    prob_yes = calculate_probability(prediction, strike, rmse)
+                    
+                    # Simulate Market Price (Dummy Logic for Demo)
+                    # In reality, market price ~ probability, but we want to show "Edge"
+                    # Let's simulate a slightly inefficient market
+                    # If prob is 80%, market might be 70c or 90c.
+                    import random
+                    noise = random.uniform(-10, 10)
+                    market_price_cents = min(99, max(1, int(prob_yes + noise)))
+                    
+                    # Calculate Edge
+                    # Edge = Model Prob - Market Price
+                    edge = prob_yes - market_price_cents
+                    
+                    # Action
+                    if prob_yes > 60 and edge > 5:
+                        action = "🟢 BUY YES"
+                    elif prob_yes < 40 and edge < -5: # If prob is low (e.g. 20%), and market is high (e.g. 30%), we want to Buy NO.
+                        # Buying NO at 30c is like Buying YES at 70c? No.
+                        # Buying NO means we profit if it DOESN'T hit.
+                        # If Model says 20% chance of YES, then 80% chance of NO.
+                        # If Market says 30c for YES (30% chance), Market implies 70% chance of NO.
+                        # Our NO prob (80%) > Market NO prob (70%). Edge is positive for NO.
+                        action = "🔴 BUY NO"
+                    else:
+                        action = "⚪ PASS"
+                        
+                    edge_data.append({
+                        "Strike Price": f"> ${strike}",
+                        "Market Price (Sim)": f"{market_price_cents}¢",
+                        "Model Prob": f"{prob_yes:.1f}%",
+                        "Edge": f"{edge:.1f}%",
+                        "Action": action
+                    })
+                    
+                st.table(edge_data)
+                
+                # 3. Interactive Calculator
+                with st.expander("🧮 Probability Calculator"):
+                    user_strike = st.number_input("Enter Strike Price", value=float(base_price), step=5.0)
+                    if user_strike:
+                        user_prob = calculate_probability(prediction, user_strike, rmse)
+                        st.metric(f"Probability Price > ${user_strike}", f"{user_prob:.1f}%")
+                        
+                        if user_prob > 60:
+                            st.success("High Probability of YES")
+                        elif user_prob < 40:
+                            st.error("High Probability of NO (Low chance of YES)")
+                        else:
+                            st.warning("Uncertain / Toss-up")
+
             except Exception as e:
                 st.error(f"Error making prediction: {e}")
 
