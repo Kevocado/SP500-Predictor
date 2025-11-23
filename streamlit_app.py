@@ -468,179 +468,8 @@ if st.sidebar.button("🔄 Retrain Model"):
 st.markdown("---")
 
 # --- MAIN CONTENT AREA ---
-# We'll have: Alpha Deck → Scanner Table → (Inline Deep Dive when row selected)
-# And a separate Performance tab
-
-# === ALPHA DECK (Hero Section) ===
 all_strikes = st.session_state.scan_results['strikes']
 all_ranges = st.session_state.scan_results['ranges']
-
-# Filter for selected asset only
-asset_strikes = [s for s in all_strikes if s['Asset'] == selected_ticker]
-
-if asset_strikes:
-    # Calculate metrics for the selected asset
-    
-    # Metric 1: Best Edge (highest confidence = furthest from 50%)
-    # Edge = how far the probability is from 50% (uncertainty)
-    best_edge_strike = max(asset_strikes, key=lambda x: abs(float(x['Prob'].strip('%')) - 50))
-    best_edge_val = abs(float(best_edge_strike['Prob'].strip('%')) - 50)
-    
-    # Metric 2: Highest Confidence (probability closest to 0 or 100)
-    # FIX: Normalize to Win Probability (0-100% Confidence)
-    # If Prob > 50% -> Confidence = Prob (BUY YES)
-    # If Prob < 50% -> Confidence = 100 - Prob (BUY NO)
-    
-    def get_confidence_and_signal(strike_data):
-        prob = strike_data['Numeric_Prob']
-        if prob > 50:
-            return prob, "BUY YES"
-        else:
-            return 100 - prob, "BUY NO"
-
-
-    highest_conf_strike = max(asset_strikes, key=lambda x: get_confidence_and_signal(x)[0])
-    highest_conf_val, conf_signal = get_confidence_and_signal(highest_conf_strike)
-    
-    # Cap at 99.9%
-    highest_conf_val = min(highest_conf_val, 99.9)
-    
-    # Metric 3: Market Mover (for now, show current prediction vs current price %)
-    # We'll need to fetch this from the current data
-    try:
-        if internal_timeframe == "Daily":
-            df_alpha = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
-            model_alpha = load_daily_model(ticker=selected_ticker)
-            if not df_alpha.empty and model_alpha:
-                df_features_alpha, _ = prepare_daily_data(df_alpha)
-                pred_alpha = predict_daily_close(model_alpha, df_features_alpha.iloc[[-1]])
-                curr_alpha = df_alpha['Close'].iloc[-1]
-                move_pct = ((pred_alpha - curr_alpha) / curr_alpha) * 100
-            else:
-                move_pct = 0
-        else:
-            df_alpha = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
-            model_alpha = load_model(ticker=selected_ticker)
-            if not df_alpha.empty and model_alpha:
-                df_features_alpha = create_features(df_alpha)
-                pred_alpha = predict_next_hour(model_alpha, df_features_alpha, ticker=selected_ticker)
-                curr_alpha = df_alpha['Close'].iloc[-1]
-                move_pct = ((pred_alpha - curr_alpha) / curr_alpha) * 100
-            else:
-                move_pct = 0
-    except:
-        move_pct = 0
-    
-    # Display 3 metric cards using containers for better control
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        with st.container(border=True):
-            st.caption("💎 Best Edge")
-            # Action Color
-            action_color = "green" if "BUY YES" in best_edge_strike['Action'] else "red"
-            st.markdown(f"### :{action_color}[{best_edge_strike['Action']}]")
-            st.markdown(f"**{best_edge_strike['Strike']}**")
-            
-            # Probability Bar (Normalized)
-            # Logic: Bar Value = Probability of WINNING the recommended bet.
-            # If BUY YES -> Model Prob.
-            # If BUY NO -> 100 - Model Prob.
-            # Color is always GREEN because it's a "Good Bet" (High Confidence).
-            
-            prob_win = best_edge_strike['Numeric_Prob'] if "BUY YES" in best_edge_strike['Action'] else (100 - best_edge_strike['Numeric_Prob'])
-            
-            # Distance Metric & Context
-            try:
-                strike_val = float(best_edge_strike['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                dist_pct = ((strike_val - curr_alpha) / curr_alpha) * 100
-                
-                # OTM/ITM Logic
-                # For Binary Call (> Strike):
-                # Price < Strike -> OTM (Needs to go UP)
-                # Price > Strike -> ITM (Already winning)
-                is_itm = curr_alpha > strike_val
-                status_icon = "🎯" if is_itm else "📉"
-                status_label = "ITM" if is_itm else "OTM"
-                dist_abs = abs(strike_val - curr_alpha)
-                
-                context_str = f"Current: ${curr_alpha:,.0f} {status_icon} ${dist_abs:.0f} {status_label}"
-            except:
-                context_str = "Context N/A"
-
-            st.altair_chart(create_probability_bar(prob_win, 50), use_container_width=True)
-            st.caption(context_str)
-            
-            c_footer1, c_footer2 = st.columns(2)
-            c_footer1.caption(f"Conf: **{prob_win:.1f}%**")
-            # Edge is Model Prob - 50 (roughly)
-            edge_val = abs(best_edge_strike['Numeric_Prob'] - 50)
-            c_footer2.caption(f"Edge: **{edge_val:.1f}%**")
-            
-            if st.button("🔍 View Bell Curve", key="btn_alpha_edge"):
-                st.session_state.selected_strike = best_edge_strike
-                st.rerun()
-    
-    with col2:
-        with st.container(border=True):
-            st.caption("🛡️ Highest Confidence")
-            action_color = "green" if "BUY YES" in conf_signal else "red"
-            st.markdown(f"### :{action_color}[{conf_signal}]")
-            st.markdown(f"**{highest_conf_strike['Strike']}**")
-            
-            # Probability Bar (Normalized)
-            prob_win_conf = highest_conf_strike['Numeric_Prob'] if "BUY YES" in conf_signal else (100 - highest_conf_strike['Numeric_Prob'])
-            
-            # Context
-            try:
-                strike_val_c = float(highest_conf_strike['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                is_itm_c = curr_alpha > strike_val_c
-                status_icon_c = "🎯" if is_itm_c else "📉"
-                status_label_c = "ITM" if is_itm_c else "OTM"
-                dist_abs_c = abs(strike_val_c - curr_alpha)
-                
-                context_str_c = f"Current: ${curr_alpha:,.0f} {status_icon_c} ${dist_abs_c:.0f} {status_label_c}"
-            except:
-                context_str_c = "Context N/A"
-
-            st.altair_chart(create_probability_bar(prob_win_conf, 50), use_container_width=True)
-            st.caption(context_str_c)
-            
-            c_footer1, c_footer2 = st.columns(2)
-            c_footer1.caption(f"Conf: **{prob_win_conf:.1f}%**")
-            c_footer2.caption(f"Prob: **{highest_conf_strike['Numeric_Prob']:.1f}%**")
-            
-            if st.button("🔍 View Bell Curve", key="btn_alpha_conf"):
-                st.session_state.selected_strike = highest_conf_strike
-                st.rerun()
-    
-    with col3:
-        with st.container(border=True):
-            st.caption("⚡ Predicted Move")
-            move_direction = "↑" if move_pct > 0 else "↓" if move_pct < 0 else "→"
-            move_color = "green" if move_pct > 0 else "red" if move_pct < 0 else "gray"
-            st.markdown(f"### :{move_color}[{move_direction} {abs(move_pct):.2f}%]")
-            st.markdown(f"**{internal_timeframe}**")
-            
-            # For move, maybe a bar showing relative strength? Or just text.
-            # Let's keep it simple as text for now, or a centered bar?
-            # User asked for "Probability Bar" for "top 3 opportunities". 
-            # This one is a "Move", not a "Trade". 
-            # Let's just show the price targets cleanly.
-            st.write("") # Spacer to align with charts
-            st.write("") 
-            
-            c_footer1, c_footer2 = st.columns(2)
-            c_footer1.caption(f"Target: **${pred_alpha:,.2f}**")
-            c_footer2.caption(f"Current: **${curr_alpha:,.2f}**")
-            
-            # No "Deep Dive" for the Move card, or maybe link to the asset generally?
-            # Let's leave it as info only.
-
-else:
-    st.info(f"No opportunities found for {selected_ticker}. Try refreshing data.")
-
-st.markdown("---")
 
 # === DEEP DIVE SECTION (Master Detail) ===
 if 'selected_strike' in st.session_state and st.session_state.selected_strike:
@@ -766,6 +595,16 @@ st.markdown("### 📋 Trade Opportunity Board")
 asset_strikes_board = [s for s in all_strikes if s['Asset'] == selected_ticker]
 asset_ranges_board = [r for r in all_ranges if r['Asset'] == selected_ticker]
 
+# Fetch current price for context
+try:
+    df_curr = fetch_data(ticker=selected_ticker, period="1d", interval="1m")
+    if not df_curr.empty:
+        curr_alpha = df_curr['Close'].iloc[-1]
+    else:
+        curr_alpha = 0
+except:
+    curr_alpha = 0
+
 # Tabs for Sections
 tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly Snipes", "📅 Daily Close", "🎯 Ranges"])
 
@@ -849,18 +688,20 @@ with tab_hourly:
                     # Financials
                     # Bid/Ask
                     if op.get('Has_Real_Data'):
-                        bid = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
-                        ask = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
-                        price_str = f"Bid: {bid}¢ | Ask: {ask}¢"
+                        bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
+                        ask_price = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
+                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price}¢"
                     else:
+                        bid_price = None
+                        ask_price = None
                         price_str = "Bid: -- | Ask: --"
 
                     st.markdown(f"**{price_str}**")
 
                     # PnL Calculator
                     wager = st.session_state.wager_amount
-                    if ask and ask > 0:
-                        contracts = wager / ask
+                    if ask_price and ask_price > 0:
+                        contracts = wager / (ask_price / 100)  # Convert cents to dollars
                         payout = contracts * 1.00
                         profit = payout - wager
                         roi = (profit / wager) * 100
@@ -952,17 +793,35 @@ with tab_daily:
                     st.caption(context_line)
                 
                 with c2:
+                    # Bid/Ask
                     if op.get('Has_Real_Data'):
-                        bid = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
-                        price_str = f"Bid: {bid}¢"
+                        bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
+                        ask_price = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
+                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price}¢"
                     else:
-                        price_str = "Bid: --"
+                        bid_price = None
+                        ask_price = None
+                        price_str = "Bid: -- | Ask: --"
                     
                     st.markdown(f"**{price_str}**")
+
+                    # PnL Calculator
+                    wager = st.session_state.wager_amount
+                    if ask_price and ask_price > 0:
+                        contracts = wager / (ask_price / 100)  # Convert cents to dollars
+                        payout = contracts * 1.00
+                        profit = payout - wager
+                        roi = (profit / wager) * 100
+                        profit_str = f"Potential Profit: +${profit:.2f} ({roi:.0f}%)"
+                        st.caption(f":green[{profit_str}]")
+                    else:
+                        st.caption("Potential Profit: —")
                     
+                    # Model Value
                     model_val = int(conf)
                     st.caption(f"Model: {model_val}¢")
                     
+                    # Edge
                     edge = abs(conf - 50)
                     if op.get('Has_Real_Data'):
                         real_edge = op.get('Real_Edge', 0)
@@ -999,14 +858,16 @@ st.markdown("---")
 with st.expander("📘 Help & Strategy"):
     st.markdown("""
     ### How to use this tool
-    1.  **Check the Alpha Deck:** The top 3 metrics show the best opportunities for the selected asset.
-    2.  **Scan the Table:** Review all strikes sorted by confidence.
-    3.  **Deep Dive:** Click a row to see detailed probability analysis.
+    1.  **🏆 Alpha Picks:** The top 3 trades in each timeframe are marked with trophy badges.
+    2.  **Scan the Board:** All opportunities are sorted by edge (model confidence vs market price).
+    3.  **Analyze:** Click "Analyze" to see detailed probability distribution and bell curves.
+    4.  **PnL Calculator:** Adjust your wager amount in the sidebar to see potential profits.
     
     ### Strategy Guide
-    *   **Best Edge:** The strike with the highest edge (model prob vs market)  
-    *   **Highest Confidence:** The most certain prediction
-    *   **Predicted Move:** Expected price change for the next timeframe
+    *   **Edge:** How much better your model thinks the odds are vs market pricing
+    *   **OTM/ITM:** Whether the current price favors your bet (In/Out of The Money)
+    *   **Bid/Ask:** Live Kalshi market prices - buy at Ask, sell at Bid
+    *   **Potential Profit:** Expected return based on your wager and the Ask price
     """)
 
 # === TABS REMOVED ===
