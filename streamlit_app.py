@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 from scipy import stats
+import altair as alt
 import sys
 import os
 from dotenv import load_dotenv
@@ -70,6 +71,39 @@ if 'selected_asset' not in st.session_state:
     st.session_state.selected_asset = "SPX"
 
 # --- HELPER FUNCTIONS ---
+def create_probability_bar(model_prob, market_prob=50):
+    """
+    Creates a simple horizontal bar chart showing Model Prob vs Market Prob (Breakeven).
+    """
+    # Data for the chart
+    data = pd.DataFrame({
+        'Probability': [model_prob],
+        'Label': ['Model']
+    })
+    
+    # Base chart
+    base = alt.Chart(data).encode(
+        x=alt.X('Probability', scale=alt.Scale(domain=[0, 100]), axis=None),
+        y=alt.Y('Label', axis=None)
+    )
+    
+    # The Bar (Model Probability)
+    # Color logic: Green if > Market, Red if < Market (but usually we show "Confidence" > 50, so mostly Green?)
+    # Actually, let's stick to the "Edge" logic. 
+    # If we are betting YES, and Model > Market, it's Green.
+    # If we are betting NO, and Model < Market, it's Green (for the NO bet).
+    # Let's just make it Blue for "Model Prediction" and use the Card Text color for Sentiment.
+    # Or use the user's request: "Green if Model > Market, Red if Model < Market".
+    
+    color = "#1b4d1b" if model_prob > market_prob else "#4d1b1b"
+    
+    bar = base.mark_bar(color=color, height=20)
+    
+    # The Rule (Market/Breakeven Probability)
+    rule = alt.Chart(pd.DataFrame({'x': [market_prob]})).mark_rule(color='white', strokeWidth=2).encode(x='x')
+    
+    return (bar + rule).properties(height=30, width='container')
+
 def run_scanner(timeframe_override=None):
     """
     Runs the market scanner and updates session state.
@@ -310,9 +344,20 @@ if asset_strikes:
             action_color = "green" if "BUY YES" in best_edge_strike['Action'] else "red"
             st.markdown(f"### :{action_color}[{best_edge_strike['Action']}]")
             st.markdown(f"**{best_edge_strike['Strike']}**")
-            st.divider()
-            st.caption(f"Confidence: **{best_edge_val:.1f}%**")
-            st.caption(f"Edge: **{abs(best_edge_strike['Numeric_Prob'] - 50):.1f}%**")
+            
+            # Probability Bar
+            # Assuming Market Prob is ~50% for ATM, but ideally we'd know the option price.
+            # For now, use 50% as the "Breakeven" anchor or just visualize the Model Prob.
+            # User asked for: "Marker at Market Price". We don't have live option prices, so 50% is a fair proxy for "Unknown".
+            st.altair_chart(create_probability_bar(best_edge_strike['Numeric_Prob'], 50), use_container_width=True)
+            
+            c_footer1, c_footer2 = st.columns(2)
+            c_footer1.caption(f"Conf: **{best_edge_val:.1f}%**")
+            c_footer2.caption(f"Edge: **{abs(best_edge_strike['Numeric_Prob'] - 50):.1f}%**")
+            
+            if st.button("🔍 View Bell Curve", key="btn_alpha_edge"):
+                st.session_state.selected_strike = best_edge_strike
+                st.rerun()
     
     with col2:
         with st.container(border=True):
@@ -320,9 +365,16 @@ if asset_strikes:
             action_color = "green" if "BUY YES" in conf_signal else "red"
             st.markdown(f"### :{action_color}[{conf_signal}]")
             st.markdown(f"**{highest_conf_strike['Strike']}**")
-            st.divider()
-            st.caption(f"Confidence: **{highest_conf_val:.1f}%**")
-            st.caption(f"Model Prob: **{highest_conf_strike['Numeric_Prob']:.1f}%**")
+            
+            st.altair_chart(create_probability_bar(highest_conf_strike['Numeric_Prob'], 50), use_container_width=True)
+            
+            c_footer1, c_footer2 = st.columns(2)
+            c_footer1.caption(f"Conf: **{highest_conf_val:.1f}%**")
+            c_footer2.caption(f"Prob: **{highest_conf_strike['Numeric_Prob']:.1f}%**")
+            
+            if st.button("🔍 View Bell Curve", key="btn_alpha_conf"):
+                st.session_state.selected_strike = highest_conf_strike
+                st.rerun()
     
     with col3:
         with st.container(border=True):
@@ -331,9 +383,22 @@ if asset_strikes:
             move_color = "green" if move_pct > 0 else "red" if move_pct < 0 else "gray"
             st.markdown(f"### :{move_color}[{move_direction} {abs(move_pct):.2f}%]")
             st.markdown(f"**{internal_timeframe}**")
-            st.divider()
-            st.caption(f"Target: **${pred_alpha:,.2f}**")
-            st.caption(f"Current: **${curr_alpha:,.2f}**")
+            
+            # For move, maybe a bar showing relative strength? Or just text.
+            # Let's keep it simple as text for now, or a centered bar?
+            # User asked for "Probability Bar" for "top 3 opportunities". 
+            # This one is a "Move", not a "Trade". 
+            # Let's just show the price targets cleanly.
+            st.write("") # Spacer to align with charts
+            st.write("") 
+            
+            c_footer1, c_footer2 = st.columns(2)
+            c_footer1.caption(f"Target: **${pred_alpha:,.2f}**")
+            c_footer2.caption(f"Current: **${curr_alpha:,.2f}**")
+            
+            # No "Deep Dive" for the Move card, or maybe link to the asset generally?
+            # Let's leave it as info only.
+
 else:
     st.info(f"No opportunities found for {selected_ticker}. Try refreshing data.")
 
