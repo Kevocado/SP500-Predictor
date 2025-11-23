@@ -232,36 +232,54 @@ with tab1:
     all_ranges = st.session_state.scan_results['ranges']
     
     if all_strikes:
+    if all_strikes:
         # Sort by Probability (Confidence)
         # We want the highest CONFIDENCE. 
         # Confidence = abs(Prob - 50). 99% is high confidence, 1% is high confidence (that it won't happen).
-        top_opps = sorted(all_strikes, key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)[:3]
         
-        st.markdown("### 🔥 Top Opportunities (Alpha Deck)")
-        c1, c2, c3 = st.columns(3)
+        # Group by Asset to get the best one for EACH instrument
+        best_per_asset = {}
+        for opp in all_strikes:
+            asset = opp['Asset']
+            confidence = abs(opp['Numeric_Prob'] - 50)
+            
+            if asset not in best_per_asset:
+                best_per_asset[asset] = (opp, confidence)
+            else:
+                if confidence > best_per_asset[asset][1]:
+                    best_per_asset[asset] = (opp, confidence)
         
-        for i, col in enumerate([c1, c2, c3]):
-            if i < len(top_opps):
-                opp = top_opps[i]
+        # Extract the opportunities
+        top_opps = [val[0] for val in best_per_asset.values()]
+        # Sort them by confidence globally just for display order
+        top_opps.sort(key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)
+        
+        st.markdown("### 🔥 Top Opportunities")
+        
+        # Dynamic columns based on how many assets found (max 4)
+        cols = st.columns(len(top_opps))
+        
+        for i, col in enumerate(cols):
+            opp = top_opps[i]
+            
+            # Display Logic: If BUY NO, show 100 - Prob as "Win Prob"
+            if "NO" in opp['Action']:
+                win_prob = 100 - opp['Numeric_Prob']
+                display_prob = f"{win_prob:.1f}%"
+            else:
+                display_prob = opp['Prob']
                 
-                # Display Logic: If BUY NO, show 100 - Prob as "Win Prob"
-                if "NO" in opp['Action']:
-                    win_prob = 100 - opp['Numeric_Prob']
-                    display_prob = f"{win_prob:.1f}%"
-                else:
-                    display_prob = opp['Prob']
-                    
-                with col:
-                    st.markdown(f"""
-                    <div style="padding: 15px; border: 1px solid #333; border-radius: 10px; background-color: #0e1117;">
-                        <h3 style="margin:0; color: #3b82f6;">{opp['Asset']} <span style="font-size:0.6em; color:grey">({opp['Timeframe']})</span></h3>
-                        <p style="font-size: 1.2em; font-weight: bold; margin: 5px 0;">{opp['Strike']}</p>
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="background-color: {'#1b4d1b' if 'YES' in opp['Action'] else '#4d1b1b'}; padding: 2px 8px; border-radius: 4px; font-size: 0.9em;">{opp['Action']}</span>
-                            <span style="font-weight: bold;">{display_prob}</span>
-                        </div>
+            with col:
+                st.markdown(f"""
+                <div style="padding: 15px; border: 1px solid #333; border-radius: 10px; background-color: #0e1117;">
+                    <h3 style="margin:0; color: #3b82f6;">{opp['Asset']} <span style="font-size:0.6em; color:grey">({opp['Timeframe']})</span></h3>
+                    <p style="font-size: 1.2em; font-weight: bold; margin: 5px 0;">{opp['Strike']}</p>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="background-color: {'#1b4d1b' if 'YES' in opp['Action'] else '#4d1b1b'}; padding: 2px 8px; border-radius: 4px; font-size: 0.9em;">{opp['Action']}</span>
+                        <span style="font-weight: bold;">{display_prob}</span>
                     </div>
-                    """, unsafe_allow_html=True)
+                </div>
+                """, unsafe_allow_html=True)
         st.markdown("---")
 
     # --- SCANNER TABLES ---
