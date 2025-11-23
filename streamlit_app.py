@@ -15,7 +15,7 @@ import numpy as np
 from scipy import stats
 import altair as alt
 import sys
-from datetime import timedelta, time, datetime
+from datetime import timedelta, time, datetime, timezone
 from zoneinfo import ZoneInfo
 
 # Hybrid Loading: .env (Local/Backend) vs st.secrets (Streamlit Cloud)
@@ -208,9 +208,12 @@ def categorize_markets(markets, ticker):
             exp_time = pd.to_datetime(exp_str)
             if exp_time.tzinfo is None:
                 # assume UTC if no tz provided
-                exp_time = exp_time.replace(tzinfo=ZoneInfo("UTC"))
+                exp_time = exp_time.replace(tzinfo=timezone.utc)
+            else:
+                # Convert to UTC for consistent comparison
+                exp_time = exp_time.astimezone(timezone.utc)
 
-            # Normalize to NY timezone for date/hour checks
+            # Normalize to NY timezone for date/hour checks (only for crypto hours check)
             exp_ny = exp_time.astimezone(ny_tz)
 
             # Range detection - use market_type field from Kalshi API
@@ -227,8 +230,8 @@ def categorize_markets(markets, ticker):
             time_diff_hours = time_diff_min / 60.0
             time_diff_days = time_diff_hours / 24.0
 
-            # Hourly: expires within 90 minutes AND (for crypto) inside allowed NY hours
-            if 0 < time_diff_min <= 90:
+            # Hourly: expires within 180 minutes (3 hours) AND (for crypto) inside allowed NY hours
+            if 0 < time_diff_min <= 180:
                 if is_crypto:
                     # Crypto active window: 09:00 - 23:59 NY time
                     if 9 <= now_ny.hour <= 23:
@@ -341,10 +344,10 @@ def run_scanner(timeframe_override=None):
                     
                     # Moneyness Filter: Check if strike is within 2% of current price
                     # Avoid "Junk Trades" that are deep OTM/ITM
-                    if curr_price_hourly > 0:
-                        pct_diff = abs(strike - curr_price_hourly) / curr_price_hourly
-                        if pct_diff > 0.02:
-                            continue # Skip if > 2% away
+                    # if curr_price_hourly > 0:
+                    #     pct_diff = abs(strike - curr_price_hourly) / curr_price_hourly
+                    #     if pct_diff > 0.02:
+                    #         continue # Skip if > 2% away
                     
                     market_type = m.get('market_type', 'above')
                     
@@ -405,11 +408,11 @@ def run_scanner(timeframe_override=None):
                     if not strike: continue
                     
                     # Moneyness Filter: Check if strike is within 2% of current price
-                    curr_price_daily = df_daily['Close'].iloc[-1]
-                    if curr_price_daily > 0:
-                        pct_diff = abs(strike - curr_price_daily) / curr_price_daily
-                        if pct_diff > 0.02:
-                            continue # Skip if > 2% away
+                    # curr_price_daily = df_daily['Close'].iloc[-1]
+                    # if curr_price_daily > 0:
+                    #     pct_diff = abs(strike - curr_price_daily) / curr_price_daily
+                    #     if pct_diff > 0.02:
+                    #         continue # Skip if > 2% away
 
                     market_type = m.get('market_type', 'above')
                     
@@ -469,7 +472,7 @@ def run_scanner(timeframe_override=None):
                     time_diff_min = (exp_time - now_utc).total_seconds() / 60.0
                     
                     # Select Model & Data
-                    if time_diff_min <= 90 and model_hourly and not df_hourly.empty:
+                    if time_diff_min <= 180 and model_hourly and not df_hourly.empty:
                         pred = pred_hourly
                         rmse = rmse_hourly
                         curr_price = df_hourly['Close'].iloc[-1]
@@ -718,6 +721,8 @@ with st.sidebar.expander("🔧 Dev Tools"):
     
     st.markdown("---")
     
+    st.caption(f"Server Time (UTC): {datetime.now(timezone.utc)} | Filters: UTC Fixed, Limit 1000")
+    
     for ticker in ["SPX", "Nasdaq", "BTC", "ETH"]:
         # Use the stored fetch method if available
         method = st.session_state.get('fetch_methods', {}).get(ticker, "Unknown")
@@ -727,7 +732,7 @@ with st.sidebar.expander("🔧 Dev Tools"):
         st.markdown(f"**{ticker}:** {len(markets)} markets | Method: `{method}`")
         if markets:
             for m in markets[:2]:
-                st.caption(f"Strike: {m.get('strike_price')} | Yes: {m.get('yes_bid')}¢")
+                st.caption(f"Strike: {m.get('strike_price')} | Yes: {m.get('yes_bid')}¢ | Exp: {m.get('expiration')}")
 
 st.markdown("---")
 
@@ -772,7 +777,7 @@ with col_feed:
     tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly", "📅 End of Day", "🎯 Ranges"])
 
 with tab_hourly:
-    st.caption("Short-term opportunities expiring in < 90 mins")
+    st.caption("Short-term opportunities expiring in < 3 hours")
     hourly_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Hourly"]
     
     if hourly_ops:
@@ -859,14 +864,14 @@ with tab_hourly:
                         bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
                         ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
                         
-                        bid_str = f"{bid_price}¢" if bid_price else "No Liq"
-                        ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Liq"
+                        bid_str = f"{bid_price}¢" if bid_price else "No Bid"
+                        ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Ask"
                         
                         price_str = f"Bid: {bid_str} | Ask: {ask_str}"
                     else:
                         bid_price = None
                         ask_price_cents = None
-                        price_str = "Bid: No Liq | Ask: No Liq"
+                        price_str = "Bid: No Bid | Ask: No Ask"
 
                     st.markdown(f"**{price_str}**")
                     st.caption("Buy at Ask / Sell at Bid")
@@ -980,14 +985,14 @@ with tab_daily:
                         bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
                         ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
                         
-                        bid_str = f"{bid_price}¢" if bid_price else "No Liq"
-                        ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Liq"
+                        bid_str = f"{bid_price}¢" if bid_price else "No Bid"
+                        ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Ask"
                         
                         price_str = f"Bid: {bid_str} | Ask: {ask_str}"
                     else:
                         bid_price = None
                         ask_price_cents = None
-                        price_str = "Bid: No Liq | Ask: No Liq"
+                        price_str = "Bid: No Bid | Ask: No Ask"
                     
                     st.markdown(f"**{price_str}**")
                     st.caption("Buy at Ask / Sell at Bid")

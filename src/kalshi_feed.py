@@ -45,7 +45,7 @@ def get_real_kalshi_markets(ticker):
         params_targeted = {
             "series_ticker": series_ticker,
             "status": "open",
-            "limit": 500
+            "limit": 1000
         }
         
         response = requests.get(
