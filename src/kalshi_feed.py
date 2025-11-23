@@ -24,9 +24,9 @@ def get_real_kalshi_markets(ticker):
     
     # Map our tickers to Kalshi's actual series tickers
     ticker_map = {
-        "BTC": "KXBTCD",          # Bitcoin Daily/Hourly
-        "ETH": "KXETHD",          # Ethereum Daily/Hourly
-        "SPX": "KXINX",           # S&P 500 Range
+        "BTC": "KXBTC",           # Bitcoin (base series catches all expirations)
+        "ETH": "KXETH",           # Ethereum (base series catches all expirations)
+        "SPX": "KXINX",           # S&P 500
         "Nasdaq": "KXNASDAQ100"   # Nasdaq-100
     }
     
