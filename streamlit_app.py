@@ -252,11 +252,14 @@ def run_scanner(timeframe_override=None):
                         if strike_val in real_market_map:
                             rm = real_market_map[strike_val]
                         else:
-                            # Fallback: Find nearest strike
+                            # Fallback: Find nearest strike within $1.00
                             if real_market_map:
                                 nearest_strike = min(real_market_map.keys(), key=lambda x: abs(x - strike_val))
-                                rm = real_market_map[nearest_strike]
-                                print(f"⚠️ No exact match for {strike_val}, using nearest: {nearest_strike}")
+                                if abs(nearest_strike - strike_val) < 1.0:
+                                    rm = real_market_map[nearest_strike]
+                                    print(f"⚠️ No exact match for {strike_val}, using nearest: {nearest_strike}")
+                                else:
+                                    rm = None
                             else:
                                 rm = None
                         
@@ -502,6 +505,18 @@ try:
 except:
     curr_alpha = 0
 
+# Legend Tile
+with st.container(border=True):
+    l1, l2, l3, l4 = st.columns(4)
+    l1.caption("🟢 BUY / 🔴 SELL")
+    l1.markdown("**Buy at Ask / Sell at Bid**")
+    l2.caption("🎯 ITM (In The Money)")
+    l2.markdown("**Winning (Price > Strike)**")
+    l3.caption("📉 OTM (Out The Money)")
+    l3.markdown("**Chasing (Price < Strike)**")
+    l4.caption("🔥 Edge")
+    l4.markdown("**Model Prob - Market Price**")
+
 # === MASTER-DETAIL SPLIT LAYOUT ===
 col_feed, col_analysis = st.columns([1, 2], gap="medium")
 
@@ -509,18 +524,6 @@ col_feed, col_analysis = st.columns([1, 2], gap="medium")
 with col_feed:
     st.markdown("### 📋 Trade Opportunity Board")
     
-    # Legend Tile
-    with st.container(border=True):
-        l1, l2, l3, l4 = st.columns(4)
-        l1.caption("🟢 BUY / 🔴 SELL")
-        l1.markdown("**Buy at Ask / Sell at Bid**")
-        l2.caption("🎯 ITM (In The Money)")
-        l2.markdown("**Winning (Price > Strike)**")
-        l3.caption("📉 OTM (Out The Money)")
-        l3.markdown("**Chasing (Price < Strike)**")
-        l4.caption("🔥 Edge")
-        l4.markdown("**Model Prob - Market Price**")
-
     # Tabs for Sections
     tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly Snipes", "📅 Daily Close", "🎯 Ranges"])
 
