@@ -39,11 +39,23 @@ if st.sidebar.button("Retrain Model"):
             st.sidebar.error("Failed to fetch data.")
 
 from src.evaluation import evaluate_model
+from src.utils import get_market_status
+from datetime import timedelta
 
 # ... (Previous code remains)
 
 # Main content
 st.title(f"📈 {selected_ticker} Hourly Predictor")
+
+# Market Status Indicator
+status = get_market_status()
+st.markdown(f"""
+    <div style="padding: 10px; border-radius: 5px; background-color: {'#1b4d1b' if status['is_open'] else '#4d1b1b'}; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+        <span style="height: 12px; width: 12px; background-color: {status['color']}; border-radius: 50%; display: inline-block;"></span>
+        <span style="font-weight: bold; color: white;">{status['status_text']}</span>
+        <span style="color: #cccccc; margin-left: auto;">{status['next_event_text']}</span>
+    </div>
+""", unsafe_allow_html=True)
 
 tab1, tab2 = st.tabs(["Live Prediction", "Model Performance"])
 
@@ -67,22 +79,18 @@ with tab1:
                             name=selected_ticker))
             
             # Hide non-trading periods (weekends and nights)
-            # Simple approach: use rangebreaks. 
-            # Note: This assumes US market hours. Adjust if using other data.
             fig.update_xaxes(
                 rangebreaks=[
                     dict(bounds=["sat", "mon"]), # hide weekends
                     dict(values=["2025-12-25", "2026-01-01"]) # hide holidays (example)
-                    # dict(bounds=[16, 9.5], pattern="hour"), # hide hours outside 9:30am-4pm (requires careful tuning with timezones)
                 ]
             )
-            # Alternative: Treat x-axis as category to remove ALL gaps automatically
-            # fig.update_xaxes(type='category') # This removes time scaling, might be too drastic for "next hour" visualization context
             
             fig.update_layout(
                 title=f"{selected_ticker} Intraday Price (Last 5 Days)", 
                 xaxis_rangeslider_visible=False,
-                height=500
+                height=500,
+                margin=dict(l=0, r=0, t=30, b=0)
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -104,10 +112,26 @@ with tab1:
                 prediction = predict_next_hour(model, df_features, ticker=selected_ticker)
                 current_price = df['Close'].iloc[-1]
                 
+                # Calculate Target Time
+                last_time = df.index[-1]
+                target_time = last_time + timedelta(hours=1)
+                
+                # Format time nicely (e.g., "3:00 PM Today")
+                now_day = last_time.date()
+                target_day = target_time.date()
+                
+                if now_day == target_day:
+                    day_str = "Today"
+                else:
+                    day_str = target_time.strftime("%A") # e.g. Monday
+                    
+                time_str = target_time.strftime("%I:%M %p")
+                target_time_display = f"{time_str} {day_str}"
+                
                 st.metric(label="Current Price", value=f"${current_price:.2f}")
                 st.metric(label="Predicted Next Hour Close", value=f"${prediction:.2f}", delta=f"{prediction - current_price:.2f}")
                 
-                st.info(f"Prediction Time: {df.index[-1]}")
+                st.info(f"🎯 **Target Time:** {target_time_display}\n\n(Based on data from {last_time.strftime('%I:%M %p')})")
                 
             except Exception as e:
                 st.error(f"Error making prediction: {e}")
@@ -117,7 +141,7 @@ with tab2:
     
     if model is not None and not df.empty:
         with st.spinner("Calculating historical performance..."):
-            results, metrics = evaluate_model(model, df, ticker=selected_ticker)
+            results, metrics, daily_metrics = evaluate_model(model, df, ticker=selected_ticker)
             
         if not results.empty:
             # Metrics Row
@@ -125,6 +149,22 @@ with tab2:
             m1.metric("Overall MAE", f"${metrics['MAE']:.2f}", help="Mean Absolute Error: Average dollar error per prediction.")
             m2.metric("Directional Accuracy", f"{metrics['Directional_Accuracy']:.1%}", help="Percentage of times the model correctly predicted the price direction (Up/Down).")
             m3.metric("Correct Predictions", f"{metrics['Correct_Count']} / {metrics['Total_Count']}", help="Count of correct direction predictions.")
+            
+            st.markdown("---")
+            
+            # Daily Performance Tracker
+            st.markdown("### 📅 Daily Performance Tracker")
+            st.caption("Breakdown of how accurate the model was for each trading day.")
+            
+            # Format the daily metrics for display
+            daily_display = daily_metrics.copy()
+            daily_display.index.name = "Date"
+            daily_display['Accuracy'] = daily_display['Accuracy'].apply(lambda x: f"{x:.1%}")
+            daily_display['MAE'] = daily_display['MAE'].apply(lambda x: f"${x:.2f}")
+            daily_display['Correct / Total'] = daily_display.apply(lambda x: f"{int(x['Correct'])} / {int(x['Total'])}", axis=1)
+            daily_display = daily_display[['Accuracy', 'MAE', 'Correct / Total']].sort_index(ascending=False)
+            
+            st.dataframe(daily_display, use_container_width=True)
             
             st.markdown("---")
             

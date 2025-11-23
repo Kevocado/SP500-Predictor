@@ -75,4 +75,14 @@ def evaluate_model(model, df, ticker="SPY"):
     
     metrics = {'MAE': mae, 'RMSE': rmse, 'Directional_Accuracy': accuracy, 'Correct_Count': results['Correct_Dir'].sum(), 'Total_Count': len(results)}
     
-    return results, metrics
+    # Calculate Daily Metrics
+    daily_metrics = results.groupby(results.index.date).apply(
+        lambda x: pd.Series({
+            'MAE': x['Abs_Error'].mean(),
+            'Accuracy': (x['Actual_Dir'] == x['Pred_Dir']).mean(),
+            'Correct': (x['Actual_Dir'] == x['Pred_Dir']).sum(),
+            'Total': len(x)
+        })
+    )
+    
+    return results, metrics, daily_metrics
