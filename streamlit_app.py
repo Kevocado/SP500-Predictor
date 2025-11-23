@@ -95,12 +95,16 @@ def create_probability_bar(model_prob, market_prob=50):
     # Let's just make it Blue for "Model Prediction" and use the Card Text color for Sentiment.
     # Or use the user's request: "Green if Model > Market, Red if Model < Market".
     
-    color = "#1b4d1b" if model_prob > market_prob else "#4d1b1b"
+    # Use accessible colors for Light/Dark mode
+    color = "#22c55e" if model_prob > market_prob else "#ef4444"
     
     bar = base.mark_bar(color=color, height=20)
     
     # The Rule (Market/Breakeven Probability)
-    rule = alt.Chart(pd.DataFrame({'x': [market_prob]})).mark_rule(color='white', strokeWidth=2).encode(x='x')
+    # Use a color that stands out in both modes (e.g., Gray or Black/White mix? Or just Orange?)
+    # White is invisible in Light Mode. Black is invisible in Dark Mode.
+    # Let's use a safe Gray or Orange.
+    rule = alt.Chart(pd.DataFrame({'x': [market_prob]})).mark_rule(color='gray', strokeWidth=3).encode(x='x')
     
     return (bar + rule).properties(height=30, width='container')
 
@@ -302,6 +306,7 @@ if asset_strikes:
         else:
             return 100 - prob, "BUY NO"
 
+
     highest_conf_strike = max(asset_strikes, key=lambda x: get_confidence_and_signal(x)[0])
     highest_conf_val, conf_signal = get_confidence_and_signal(highest_conf_strike)
     
@@ -478,8 +483,8 @@ if 'selected_strike' in st.session_state and st.session_state.selected_strike:
                         mode='lines',
                         fill='tozeroy',
                         name=f'Prob Above {strike_str}',
-                        line=dict(color='#1b4d1b', width=0),
-                        fillcolor='rgba(27, 77, 27, 0.3)'
+                        line=dict(color='#22c55e', width=0),
+                        fillcolor='rgba(34, 197, 94, 0.3)' # Green with opacity
                     ))
                 else:  # BUY NO
                     # Shade area below strike
@@ -489,14 +494,15 @@ if 'selected_strike' in st.session_state and st.session_state.selected_strike:
                         mode='lines',
                         fill='tozeroy',
                         name=f'Prob Below {strike_str}',
-                        line=dict(color='#4d1b1b', width=0),
-                        fillcolor='rgba(77, 27, 27, 0.3)'
+                        line=dict(color='#ef4444', width=0),
+                        fillcolor='rgba(239, 68, 68, 0.3)' # Red with opacity
                     ))
                 
                 # Add vertical lines for prediction, current price, and strike
-                fig.add_vline(x=pred_deep, line_dash="dash", line_color="yellow", annotation_text="Predicted", annotation_position="top")
-                fig.add_vline(x=curr_price_deep, line_dash="dash", line_color="white", annotation_text="Current", annotation_position="top")
-                fig.add_vline(x=strike_price, line_color="red", line_width=3, annotation_text="Strike", annotation_position="top")
+                fig.add_vline(x=pred_deep, line_dash="dash", line_color="orange", annotation_text="Predicted", annotation_position="top")
+                # Current price needs to be visible in both modes. 'gray' is usually safe.
+                fig.add_vline(x=curr_price_deep, line_dash="dash", line_color="gray", annotation_text="Current", annotation_position="top")
+                fig.add_vline(x=strike_price, line_color="#ef4444", line_width=3, annotation_text="Strike", annotation_position="top")
                 
                 fig.update_layout(
                     title=f"Probability: {selected_strike['Prob']}",
