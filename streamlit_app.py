@@ -92,6 +92,17 @@ with tab1:
                 rmse_scan = get_recent_rmse(model_scan, df_scan, ticker=ticker)
                 curr_price_scan = df_scan['Close'].iloc[-1]
                 
+                # Determine Status
+                is_crypto = ticker in ["BTC", "ETH"]
+                market_status = get_market_status()
+                
+                if is_crypto:
+                    status_icon = "🟢" # Crypto always open
+                elif market_status['is_open']:
+                    status_icon = "🟢"
+                else:
+                    status_icon = "🔴"
+
                 # Generate Strikes
                 base_price_scan = round(curr_price_scan / 10) * 10
                 strikes_scan = [base_price_scan + (k * 10) for k in range(-2, 3)]
@@ -111,6 +122,7 @@ with tab1:
                     if action != "PASS":
                         scan_results.append({
                             "Asset": ticker,
+                            "Status": status_icon,
                             "Strike": f"> ${strike}",
                             "Prob": f"{prob:.1f}%",
                             "Edge": f"{edge:.1f}%",
