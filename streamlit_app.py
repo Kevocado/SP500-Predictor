@@ -354,50 +354,7 @@ with col_refresh:
 # Market Context Bar
 display_market_context()
 
-# DEBUG: Show Kalshi API Status on-screen
-with st.expander("🔍 Kalshi API Debug (Expand to see data)", expanded=False):
-    st.caption("This shows what data is being received from Kalshi.")
-    
-    # Test one ticker in detail
-    st.markdown("### Detailed Test: BTC")
-    try:
-        import requests
-        params = {"limit": 10, "status": "open"}
-        headers = {}
-        api_key = os.getenv("KALSHI_API_KEY")
-        
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-            st.success(f"✅ API Key found (length: {len(api_key)})")
-        else:
-            st.error("❌ No API Key found in environment")
-        
-        response = requests.get("https://api.elections.kalshi.com/trade-api/v2/markets", params=params, headers=headers if api_key else None)
-        
-        st.write(f"**Status Code:** {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            markets = data.get('markets', [])
-            st.write(f"**Total Markets:** {len(markets)}")
-            
-            if markets:
-                st.write("**First 3 markets:**")
-                for m in markets[:3]:
-                    st.json(m)
-        else:
-            st.error(f"Error: {response.text[:500]}")
-    except Exception as e:
-        st.error(f"Exception: {str(e)}")
-    
-    st.markdown("---")
-    
-    for ticker in ["SPX", "Nasdaq", "BTC", "ETH"]:
-        markets = get_real_kalshi_markets(ticker)
-        st.markdown(f"**{ticker}:** {len(markets)} markets found")
-        if markets:
-            for m in markets[:3]:  # Show first 3
-                st.caption(f"  Strike: {m.get('strike_price')} | Yes Bid: {m.get('yes_bid')}¢ | No Bid: {m.get('no_bid')}¢")
+# Debug section removed as per request
 
 
 st.markdown("---")
@@ -467,6 +424,20 @@ if st.sidebar.button("🔄 Retrain Model"):
 
 st.sidebar.markdown("---")
 
+with st.sidebar.expander("📘 Help & Strategy"):
+    st.markdown("""
+    **The Strategy**
+    This model predicts the probability of hourly price moves. We buy when Model Confidence > Market Price.
+    
+    **The PnL**
+    Enter your wager size above. The cards calculate your profit if the price hits the strike.
+    
+    **Bid vs Ask**
+    You pay the 'Ask' price to enter a trade. If you want to sell early, you sell at the 'Bid'.
+    """)
+
+st.sidebar.markdown("---")
+
 # DEBUG TOOLS
 with st.sidebar.expander("🔧 Dev Tools"):
     st.caption("Kalshi API Debug Information")
@@ -532,7 +503,7 @@ except:
     curr_alpha = 0
 
 # === MASTER-DETAIL SPLIT LAYOUT ===
-col_feed, col_analysis = st.columns([1.6, 1], gap="medium")
+col_feed, col_analysis = st.columns([1, 2], gap="medium")
 
 # LEFT COLUMN: Trade Opportunity Board
 with col_feed:
@@ -622,26 +593,30 @@ with tab_hourly:
                     # Bid/Ask
                     if op.get('Has_Real_Data'):
                         bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
-                        ask_price = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
-                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price}¢"
+                        ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
+                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price_cents}¢"
                     else:
                         bid_price = None
-                        ask_price = None
+                        ask_price_cents = None
                         price_str = "Bid: -- | Ask: --"
 
                     st.markdown(f"**{price_str}**")
+                    st.caption("Buy at Ask / Sell at Bid")
 
                     # PnL Calculator
-                    wager = st.session_state.wager_amount
-                    if ask_price and ask_price > 0:
-                        contracts = wager / (ask_price / 100)  # Convert cents to dollars
-                        payout = contracts * 1.00
-                        profit = payout - wager
-                        roi = (profit / wager) * 100
-                        profit_str = f"Potential Profit: +${profit:.2f} ({roi:.0f}%)"
-                        st.caption(f":green[{profit_str}]")
+                    wager = st.session_state.get('wager_amount', 100)
+                    if ask_price_cents and ask_price_cents > 0:
+                        ask_price = ask_price_cents / 100.0
+                        contracts = wager / ask_price
+                        potential_payout = contracts * 1.00 # Binary options pay $1.00
+                        profit = potential_payout - wager
+                        profit_text = f"+${profit:.2f}"
+                        profit_color = "green"
                     else:
-                        st.caption("Potential Profit: —")
+                        profit_text = "—"
+                        profit_color = "grey"
+                    
+                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**")
                     
                     # Model Value
                     model_val = int(conf) # roughly cents
@@ -729,26 +704,30 @@ with tab_daily:
                     # Bid/Ask
                     if op.get('Has_Real_Data'):
                         bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
-                        ask_price = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
-                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price}¢"
+                        ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
+                        price_str = f"Bid: {bid_price}¢ | Ask: {ask_price_cents}¢"
                     else:
                         bid_price = None
-                        ask_price = None
+                        ask_price_cents = None
                         price_str = "Bid: -- | Ask: --"
                     
                     st.markdown(f"**{price_str}**")
+                    st.caption("Buy at Ask / Sell at Bid")
 
                     # PnL Calculator
-                    wager = st.session_state.wager_amount
-                    if ask_price and ask_price > 0:
-                        contracts = wager / (ask_price / 100)  # Convert cents to dollars
-                        payout = contracts * 1.00
-                        profit = payout - wager
-                        roi = (profit / wager) * 100
-                        profit_str = f"Potential Profit: +${profit:.2f} ({roi:.0f}%)"
-                        st.caption(f":green[{profit_str}]")
+                    wager = st.session_state.get('wager_amount', 100)
+                    if ask_price_cents and ask_price_cents > 0:
+                        ask_price = ask_price_cents / 100.0
+                        contracts = wager / ask_price
+                        potential_payout = contracts * 1.00 # Binary options pay $1.00
+                        profit = potential_payout - wager
+                        profit_text = f"+${profit:.2f}"
+                        profit_color = "green"
                     else:
-                        st.caption("Potential Profit: —")
+                        profit_text = "—"
+                        profit_color = "grey"
+                    
+                    st.markdown(f"**PnL: :{profit_color}[{profit_text}]**")
                     
                     # Model Value
                     model_val = int(conf)
@@ -902,21 +881,7 @@ with col_analysis:
 
 st.markdown("---")
 
-# === HELP SECTION ===
-with st.expander("📘 Help & Strategy"):
-    st.markdown("""
-    ### How to use this tool
-    1.  **🏆 Alpha Picks:** The top 3 trades in each timeframe are marked with trophy badges.
-    2.  **Scan the Board:** All opportunities are sorted by edge (model confidence vs market price).
-    3.  **Analyze:** Click "Analyze" to see detailed probability distribution and bell curves.
-    4.  **PnL Calculator:** Adjust your wager amount in the sidebar to see potential profits.
-    
-    ### Strategy Guide
-    *   **Edge:** How much better your model thinks the odds are vs market pricing
-    *   **OTM/ITM:** Whether the current price favors your bet (In/Out of The Money)
-    *   **Bid/Ask:** Live Kalshi market prices - buy at Ask, sell at Bid
-    *   **Potential Profit:** Expected return based on your wager and the Ask price
-    """)
+# Help section moved to sidebar
 
 # === TABS REMOVED ===
 # Analytics moved to pages/1_📈_Performance.py
