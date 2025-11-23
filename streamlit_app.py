@@ -22,7 +22,7 @@ It calculates the probability of price targets for Indices, Crypto, and High-Vol
 
 # Sidebar for controls
 st.sidebar.header("Controls")
-selected_ticker = st.sidebar.selectbox("Select Asset", ["SPX", "Nasdaq", "SPY", "NVDA", "TSLA", "BTC", "ETH"])
+selected_ticker = st.sidebar.selectbox("Select Asset", ["SPX", "Nasdaq", "BTC", "ETH"])
 
 if st.sidebar.button("Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
@@ -174,7 +174,8 @@ with tab1:
                         action = "⚪ PASS"
                         
                     edge_data.append({
-                        "Time": time_str, # Add Time Column
+                        "Date": now_day.strftime("%Y-%m-%d"), # Add Date Column
+                        "Time": time_str, 
                         "Strike": f"> ${strike}",
                         "Mkt Price": f"{market_price_cents}¢",
                         "Model %": f"{prob_yes:.1f}%",

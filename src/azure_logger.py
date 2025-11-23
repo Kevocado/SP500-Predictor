@@ -11,7 +11,7 @@ load_dotenv()
 CONTAINER_NAME = "sp500-market-data"
 CONNECTION_STRING = os.getenv("AZURE_CONNECTION_STRING")
 
-def log_prediction(prediction, current_price, rmse, edge_data, ticker="SPX"):
+def log_prediction(prediction, current_price, rmse, edge_data, ticker="SPX", timestamp=None):
     """
     Logs the prediction details to Azure Blob Storage.
     
@@ -21,6 +21,7 @@ def log_prediction(prediction, current_price, rmse, edge_data, ticker="SPX"):
         rmse (float): The model's RMSE.
         edge_data (list): List of dictionaries containing edge opportunities.
         ticker (str): The ticker symbol.
+        timestamp (datetime, optional): Custom timestamp for backfilling. Defaults to UTC now.
     """
     if not CONNECTION_STRING:
         print("Azure Connection String not found. Skipping logging.")
@@ -45,7 +46,7 @@ def log_prediction(prediction, current_price, rmse, edge_data, ticker="SPX"):
                 continue
 
         log_entry = {
-            'timestamp_utc': datetime.utcnow().isoformat(),
+            'timestamp_utc': timestamp.isoformat() if timestamp else datetime.utcnow().isoformat(),
             'ticker': ticker,
             'current_price': current_price,
             'predicted_price': prediction,
