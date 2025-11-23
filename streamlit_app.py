@@ -160,4 +160,22 @@ st.markdown("---")
 st.markdown("### Model Info")
 if model:
     st.write(f"Model Type: LightGBM Regressor")
+
+# How to Use Section (Expander or separate area)
+with st.expander("ℹ️ How to Use & Disclaimer"):
+    st.markdown("""
+    ### ⚠️ Disclaimer: Not Financial Advice
+    **This tool is for informational and educational purposes only.** Do not use this as the sole basis for any investment decisions. The predictions are based on historical patterns and cannot guarantee future results. Financial markets are inherently risky.
+    
+    ### 🎯 How to Interpret for Prediction Markets
+    This tool is designed to help you make informed guesses for **hourly prediction markets** (like Kalshi, Webull, or Polymarket).
+    
+    **Scenario: "Will SPX close above $6600 at 2 PM?"**
+    
+    1.  **Check the Prediction:** Look at the "Predicted Next Hour Close".
+    2.  **Compare:** 
+        *   If **Predicted > Target** (e.g., $6610 > $6600), the model suggests the price will be **UP**. You might consider buying "Yes" contracts.
+        *   If **Predicted < Target** (e.g., $6590 < $6600), the model suggests the price will be **DOWN**. You might consider buying "No" contracts.
+    3.  **Verify Confidence:** Check the "Model Performance" tab. If the "Directional Accuracy" is high (>55-60%) and the "Rolling MAE" is low, the signal is stronger.
+    """)
     # Could add feature importance plot here
