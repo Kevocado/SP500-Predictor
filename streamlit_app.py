@@ -9,6 +9,7 @@ env_path = current_dir / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
 import pandas as pd
+import yfinance as yf
 import plotly.graph_objects as go
 import numpy as np
 from scipy import stats
@@ -109,6 +110,56 @@ def create_probability_bar(model_prob, market_prob=50):
     rule = alt.Chart(pd.DataFrame({'x': [market_prob]})).mark_rule(color='gray', strokeWidth=3).encode(x='x')
     
     return (bar + rule).properties(height=30, width='container')
+
+def display_market_context():
+    """
+    Displays macro market context (VIX, Yields, BTC Volume) using yfinance.
+    """
+    try:
+        # Fetch data for VIX, 10Y Yield, and BTC
+        # Use simple Ticker objects for reliability
+        vix = yf.Ticker("^VIX").history(period="1d")
+        tnx = yf.Ticker("^TNX").history(period="1d")
+        btc = yf.Ticker("BTC-USD").history(period="1d")
+        
+        if not vix.empty and not tnx.empty and not btc.empty:
+            # VIX
+            vix_val = vix['Close'].iloc[-1]
+            vix_open = vix['Open'].iloc[-1]
+            vix_delta = vix_val - vix_open
+            
+            # 10Y Yield
+            tnx_val = tnx['Close'].iloc[-1]
+            
+            # BTC Volume
+            btc_vol = btc['Volume'].iloc[-1]
+            btc_vol_b = btc_vol / 1_000_000_000
+            
+            # Regime Logic
+            if vix_val > 20:
+                regime = "HIGH VOLATILITY"
+                regime_icon = "⚠️"
+                is_high_vol = True
+            else:
+                regime = "NORMAL"
+                regime_icon = "✅"
+                is_high_vol = False
+                
+            # Display
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("🌪️ VIX", f"{vix_val:.2f}", f"{vix_delta:+.2f}", delta_color="inverse")
+            m2.metric("🏦 10Y Yield", f"{tnx_val:.2f}%")
+            m3.metric("₿ Volume", f"{btc_vol_b:.1f}B")
+            
+            with m4:
+                if is_high_vol:
+                    st.error(f"{regime_icon} {regime}")
+                else:
+                    st.success(f"{regime_icon} {regime}")
+            
+    except Exception as e:
+        # Fail silently or show small error
+        st.caption(f"Market Context Unavailable: {e}")
 
 def run_scanner(timeframe_override=None):
     """
@@ -275,6 +326,9 @@ with col_refresh:
     if st.button("🔄 Refresh Data", use_container_width=True):
         run_scanner()
         st.rerun()
+
+# Market Context Bar
+display_market_context()
 
 st.markdown("---")
 
