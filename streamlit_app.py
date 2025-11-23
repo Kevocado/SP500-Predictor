@@ -646,72 +646,101 @@ with tab_hourly:
         
         for i, op in enumerate(hourly_ops):
             with st.container(border=True):
-                c1, c2, c3 = st.columns([2, 2, 1])
+                # Deal Ticket Layout: 2 Columns
+                c1, c2 = st.columns([1.5, 1])
                 
-                # Reliability Badge Logic
-                rmse_val = op.get('RMSE', 15.0)
-                # SPX/NDX have high RMSE (10-30), others lower. 
-                # User rule: < 5.0 High Precision, > 10.0 Volatile.
-                # We'll stick to that strictly.
-                if rmse_val < 5.0:
-                    badge = "✅ High Precision Model"
-                elif rmse_val > 10.0:
-                    badge = "⚠️ Volatile Model"
+                # Logic Prep
+                prob = op['Numeric_Prob']
+                if prob > 50:
+                    conf = prob
+                    signal = "BUY YES"
+                    is_buy_yes = True
                 else:
-                    badge = "ℹ️ Normal Volatility"
+                    conf = 100 - prob
+                    signal = "BUY NO"
+                    is_buy_yes = False
                 
-                with c1:
-                    st.markdown(f"### {op['Strike']}")
-                    st.caption(f"Expires: {op['Time']}")
+                # Context Logic
+                try:
+                    strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
+                    # Use curr_alpha if available and matching
+                    curr = curr_alpha if op['Asset'] == selected_ticker else 0
                     
-                    # Context Line
-                    try:
-                        strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                        # Need current price. For Hourly, we have curr_price_hourly in the loop but not here.
-                        # But we can assume the user wants the latest known price.
-                        # We can fetch it or pass it? 
-                        # Actually, we stored 'curr_price_hourly' in the loop but didn't save it to 'op'.
-                        # Let's just use the 'curr_alpha' if it matches the asset, or skip.
-                        # Better: The 'op' dict should ideally have 'Current_Price'.
-                        # Since we can't easily add it to 'op' without re-running scanner, let's use a rough calc or skip.
-                        # Wait, we can use the 'curr_alpha' calculated in Alpha Deck section if the asset matches!
-                        if op['Asset'] == selected_ticker:
-                            curr = curr_alpha
-                            is_itm = curr > strike_val
-                            status_icon = "🎯" if is_itm else "📉"
-                            status_label = "ITM" if is_itm else "OTM"
-                            dist_abs = abs(strike_val - curr)
-                            st.caption(f"Curr: ${curr:,.0f} {status_icon} ${dist_abs:.0f} {status_label}")
-                    except:
-                        pass
+                    if curr > 0:
+                        # OTM/ITM Logic
+                        # Buy NO: Want Price < Strike. 
+                        # If Price < Strike -> OTM (Safe/Winning).
+                        # If Price > Strike -> ITM (Risk/Losing).
+                        # Buy YES: Want Price > Strike.
+                        # If Price > Strike -> ITM (Winning).
+                        # If Price < Strike -> OTM (Losing).
+                        
+                        if not is_buy_yes: # BUY NO
+                            if curr < strike_val:
+                                badge_text = "📉 OTM (Safe)"
+                                badge_color = "green"
+                            else:
+                                badge_text = "⚠️ ITM (Risk)"
+                                badge_color = "red"
+                        else: # BUY YES
+                            if curr > strike_val:
+                                badge_text = "🎯 ITM (Winning)"
+                                badge_color = "green"
+                            else:
+                                badge_text = "📉 OTM (Losing)"
+                                badge_color = "red"
+                                
+                        context_line = f"Current: ${curr:,.0f}"
+                    else:
+                        badge_text = "Waiting for Data"
+                        badge_color = "gray"
+                        context_line = "Current: N/A"
+                except:
+                    badge_text = "N/A"
+                    badge_color = "gray"
+                    context_line = "Current: N/A"
+
+                with c1:
+                    # Header: Signal
+                    st.markdown(f"### :green[{signal}]")
+                    # Sub-header: Strike
+                    st.markdown(f"**{op['Strike']}**")
+                    # Badge
+                    st.caption(f":{badge_color}[{badge_text}]")
+                    # Context
+                    st.caption(context_line)
                 
                 with c2:
-                    # Calculate Edge/Confidence for display
-                    prob = op['Numeric_Prob']
-                    if prob > 50:
-                        conf = prob
-                        signal = "BUY YES"
-                        # Color: Green
+                    # Financials
+                    # Bid/Ask
+                    if op.get('Has_Real_Data'):
+                        bid = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
+                        # Ask is usually Bid + Spread. Kalshi spread is tight, maybe +1-2 cents?
+                        # We don't have Ask in the feed currently, let's just show Bid.
+                        # Or if we want to be fancy, Bid / Ask placeholder.
+                        # User asked for "Bid: 42¢ | Ask: 45¢". We only have Bid from our feed.
+                        # Let's just show Bid for now or update feed later.
+                        price_str = f"Bid: {bid}¢"
                     else:
-                        conf = 100 - prob
-                        signal = "BUY NO"
-                        # Color: Green (High Confidence)
+                        price_str = "Bid: --"
                     
-                    # Always Green for High Confidence
-                    st.metric("Confidence", f"{conf:.1f}%", f":green[{signal}]")
-                    st.caption(badge)
+                    st.markdown(f"**{price_str}**")
                     
-                    # Show Real Data if available
+                    # Model Value
+                    model_val = int(conf) # roughly cents
+                    st.caption(f"Model: {model_val}¢")
+                    
+                    # Edge
+                    edge = abs(conf - 50) # Rough edge proxy or use Real Edge
                     if op.get('Has_Real_Data'):
                         real_edge = op.get('Real_Edge', 0)
-                        bid = op.get('Real_Yes_Bid') if "BUY YES" in signal else op.get('Real_No_Bid')
-                        # Bid is in cents usually, let's assume 1-99
-                        st.markdown(f"**Real Edge:** :green[{real_edge:.1f}%]")
-                        st.caption(f"Bid: {bid}¢")
-                
-                with c3:
-                    st.write("") # Spacer
-                    if st.button("Deep Dive", key=f"dd_h_{i}_{op['Strike']}"):
+                        edge_str = f"🔥 +{real_edge:.1f}% Edge"
+                    else:
+                        edge_str = f"⚡ {edge:.1f}% Conf"
+                        
+                    st.markdown(f"**{edge_str}**")
+                    
+                    if st.button("Analyze", key=f"dd_h_{i}_{op['Strike']}"):
                         st.session_state.selected_strike = op
                         st.rerun()
     else:
@@ -726,55 +755,79 @@ with tab_daily:
         
         for i, op in enumerate(daily_ops):
             with st.container(border=True):
-                c1, c2, c3 = st.columns([2, 2, 1])
+                # Deal Ticket Layout: 2 Columns
+                c1, c2 = st.columns([1.5, 1])
                 
-                # Reliability Badge
-                rmse_val = op.get('RMSE', 15.0)
-                if rmse_val < 5.0:
-                    badge = "✅ High Precision Model"
-                elif rmse_val > 10.0:
-                    badge = "⚠️ Volatile Model"
+                # Logic Prep
+                prob = op['Numeric_Prob']
+                if prob > 50:
+                    conf = prob
+                    signal = "BUY YES"
+                    is_buy_yes = True
                 else:
-                    badge = "ℹ️ Normal Volatility"
+                    conf = 100 - prob
+                    signal = "BUY NO"
+                    is_buy_yes = False
                 
-                with c1:
-                    st.markdown(f"### {op['Strike']}")
-                    st.caption(f"Target: {op['Date']} Close")
+                # Context Logic
+                try:
+                    strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
+                    curr = curr_alpha if op['Asset'] == selected_ticker else 0
                     
-                    # Context Line
-                    try:
-                        strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                        if op['Asset'] == selected_ticker:
-                            curr = curr_alpha
-                            is_itm = curr > strike_val
-                            status_icon = "🎯" if is_itm else "📉"
-                            status_label = "ITM" if is_itm else "OTM"
-                            dist_abs = abs(strike_val - curr)
-                            st.caption(f"Curr: ${curr:,.0f} {status_icon} ${dist_abs:.0f} {status_label}")
-                    except:
-                        pass
+                    if curr > 0:
+                        if not is_buy_yes: # BUY NO
+                            if curr < strike_val:
+                                badge_text = "📉 OTM (Safe)"
+                                badge_color = "green"
+                            else:
+                                badge_text = "⚠️ ITM (Risk)"
+                                badge_color = "red"
+                        else: # BUY YES
+                            if curr > strike_val:
+                                badge_text = "🎯 ITM (Winning)"
+                                badge_color = "green"
+                            else:
+                                badge_text = "📉 OTM (Losing)"
+                                badge_color = "red"
+                                
+                        context_line = f"Current: ${curr:,.0f}"
+                    else:
+                        badge_text = "Waiting for Data"
+                        badge_color = "gray"
+                        context_line = "Current: N/A"
+                except:
+                    badge_text = "N/A"
+                    badge_color = "gray"
+                    context_line = "Current: N/A"
+
+                with c1:
+                    st.markdown(f"### :green[{signal}]")
+                    st.markdown(f"**{op['Strike']}**")
+                    st.caption(f":{badge_color}[{badge_text}]")
+                    st.caption(context_line)
                 
                 with c2:
-                    prob = op['Numeric_Prob']
-                    if prob > 50:
-                        conf = prob
-                        signal = "BUY YES"
+                    if op.get('Has_Real_Data'):
+                        bid = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
+                        price_str = f"Bid: {bid}¢"
                     else:
-                        conf = 100 - prob
-                        signal = "BUY NO"
+                        price_str = "Bid: --"
                     
-                    st.metric("Confidence", f"{conf:.1f}%", f":green[{signal}]")
-                    st.caption(badge)
+                    st.markdown(f"**{price_str}**")
                     
+                    model_val = int(conf)
+                    st.caption(f"Model: {model_val}¢")
+                    
+                    edge = abs(conf - 50)
                     if op.get('Has_Real_Data'):
                         real_edge = op.get('Real_Edge', 0)
-                        bid = op.get('Real_Yes_Bid') if "BUY YES" in signal else op.get('Real_No_Bid')
-                        st.markdown(f"**Real Edge:** :green[{real_edge:.1f}%]")
-                        st.caption(f"Bid: {bid}¢")
-                
-                with c3:
-                    st.write("")
-                    if st.button("Deep Dive", key=f"dd_d_{i}_{op['Strike']}"):
+                        edge_str = f"🔥 +{real_edge:.1f}% Edge"
+                    else:
+                        edge_str = f"⚡ {edge:.1f}% Conf"
+                        
+                    st.markdown(f"**{edge_str}**")
+                    
+                    if st.button("Analyze", key=f"dd_d_{i}_{op['Strike']}"):
                         st.session_state.selected_strike = op
                         st.rerun()
     else:
