@@ -8,3 +8,5 @@ joblib
 ta
 matplotlib
 plotly
+azure-storage-blob
+python-dotenv
