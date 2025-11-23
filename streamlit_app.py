@@ -43,13 +43,21 @@ from src.utils import get_market_status, determine_best_timeframe
 from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
 from src.signals import generate_trading_signals
 
-# Azure Logger with Safety Wrapper
-try:
-    from src.azure_logger import log_prediction, fetch_all_logs
-    AZURE_AVAILABLE = True
-except Exception as e:
-    AZURE_AVAILABLE = False
-    print(f"⚠️ Azure logging disabled: {e}")
+# Azure Logger with Safety Wrapper (Only needed for main app if we log predictions here, but for now we keep it if needed or remove if unused. 
+# The prompt said "Move all code related to... Azure Logs". 
+# But we might still need logging for predictions? 
+# The prompt said "Cut all the code related to 'Model Performance', 'Trust Engine', 'Calibration Curve', and 'Azure Logs'".
+# It didn't explicitly say remove logging of NEW predictions. 
+# However, let's keep the import if it's used for logging new predictions, but remove the "Historical Logs" section at the bottom.
+# Actually, looking at the code, `log_prediction` is imported but not used in the visible code? 
+# Ah, `log_prediction` is likely used inside `generate_trading_signals` or similar? No, it's usually called after prediction.
+# Let's check if `log_prediction` is used. It's imported at line 48.
+# Searching the file... it's NOT used in the provided code!
+# So we can remove the import block entirely if we want to be clean, or just leave it.
+# Let's remove the unused imports to be clean, as per "Move all code related to... Azure Logs".
+
+# Removing unused imports for analytics
+
 
 st.set_page_config(page_title="Prediction Market Edge Finder", layout="wide")
 
@@ -242,8 +250,20 @@ if asset_strikes:
     best_edge_val = abs(float(best_edge_strike['Prob'].strip('%')) - 50)
     
     # Metric 2: Highest Confidence (probability closest to 0 or 100)
-    highest_conf_strike = max(asset_strikes, key=lambda x: abs(x['Numeric_Prob'] - 50))
-    highest_conf_val = highest_conf_strike['Numeric_Prob']
+    # FIX: Normalize to Win Probability (0-100% Confidence)
+    # If Prob > 50% -> Confidence = Prob (BUY YES)
+    # If Prob < 50% -> Confidence = 100 - Prob (BUY NO)
+    
+    def get_confidence_and_signal(strike_data):
+        prob = strike_data['Numeric_Prob']
+        if prob > 50:
+            return prob, "BUY YES"
+        else:
+            return 100 - prob, "BUY NO"
+
+    highest_conf_strike = max(asset_strikes, key=lambda x: get_confidence_and_signal(x)[0])
+    highest_conf_val, conf_signal = get_confidence_and_signal(highest_conf_strike)
+    
     # Cap at 99.9%
     highest_conf_val = min(highest_conf_val, 99.9)
     
@@ -287,7 +307,7 @@ if asset_strikes:
     with col2:
         st.metric(
             label="🛡️ Highest Confidence",
-            value=f"{highest_conf_val:.1f}%",
+            value=f"{highest_conf_val:.1f}% ({conf_signal})",
             delta=highest_conf_strike['Strike'],
             help=f"Most confident prediction: {highest_conf_strike['Action']}"
         )
@@ -383,9 +403,9 @@ if asset_strikes_table:
                         raise Exception("No data")
                 
                 # Parse strike price from the selected row
-                strike_str = selected_strike['Strike']
-                # Strike format is typically "$5,500" or similar
-                strike_price = float(strike_str.replace('$', '').replace(',', ''))
+                strike_str = str(selected_strike['Strike'])
+                # Clean the string: Remove '>', '$', and whitespace
+                strike_price = float(strike_str.replace('>', '').replace('$', '').replace(',', '').strip())
                 
                 # Calculate probability using the model's prediction distribution
                 prob_val = calculate_probability(pred_deep, rmse_deep, strike_price, selected_strike['Action'])
@@ -481,109 +501,9 @@ with st.expander("📘 Help & Strategy"):
     *   **Predicted Move:** Expected price change for the next timeframe
     """)
 
-# === TABS: Main Page is default, Performance is separate ===
-main_tab, perf_tab = st.tabs(["📊 Trading Dashboard", "📈 Model Performance & History"])
+# === TABS REMOVED ===
+# Analytics moved to pages/1_📈_Performance.py
 
-with main_tab:
-    # This tab is empty because all content is already on the main page above
-    # The trading content (Alpha Deck + Scanner) is rendered before the tabs
-    st.info("👆 All trading information is displayed above. Use the Performance tab to review model accuracy and history.")
-
-with perf_tab:
-    st.markdown("### 📈 Model Performance & Analytics")
-    st.caption(f"Historical performance metrics for {selected_ticker}")
-    
-    # Fetch data for performance analysis
-    try:
-        if internal_timeframe == "Daily":
-            df_perf = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
-            model_perf = load_daily_model(ticker=selected_ticker)
-        else:
-            df_perf = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
-            model_perf = load_model(ticker=selected_ticker)
-    except:
-        df_perf = pd.DataFrame()
-        model_perf = None
-    
-    if model_perf is not None and not df_perf.empty:
-        with st.spinner("Calculating historical performance..."):
-            try:
-                results, metrics, daily_metrics = evaluate_model(model_perf, df_perf, ticker=selected_ticker)
-            except Exception as e:
-                st.error(f"Error calculating metrics: {e}")
-                results = pd.DataFrame()
-            
-        if not results.empty:
-            # --- TRUST ENGINE METRICS ---
-            st.markdown("### 🛡️ The Trust Engine")
-            
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Directional Accuracy", f"{metrics['Directional_Accuracy']:.1%}", help="How often the model correctly predicts Up vs Down.")
-            m2.metric("Brier Score", f"{metrics['Brier_Score']:.3f}", help="Probabilistic Error. 0.0 is perfect, 0.25 is random guessing. Lower is better.")
-            m3.metric("Total PnL (Sim)", f"${metrics['Total_PnL']:,.0f}", help="Simulated Profit/Loss if betting $100 on high-confidence signals (>60% or <40%).")
-            m4.metric("MAE", f"${metrics['MAE']:.2f}", help="Average dollar error per prediction.")
-            
-            st.markdown("---")
-            
-            # --- CHARTS ---
-            col_charts1, col_charts2 = st.columns(2)
-            
-            with col_charts1:
-                st.markdown("#### 📈 Cumulative PnL (Backtest)")
-                st.caption("Growth of a $10,000 account betting $100 per trade.")
-                
-                fig_pnl = go.Figure()
-                fig_pnl.add_trace(go.Scatter(x=results.index, y=results['Cum_PnL'], mode='lines', name='PnL', fill='tozeroy', line=dict(color='#3b82f6')))
-                fig_pnl.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
-                st.plotly_chart(fig_pnl, use_container_width=True)
-                
-            with col_charts2:
-                st.markdown("#### 🎯 Calibration Curve")
-                st.caption("Does 70% probability actually mean 70% win rate? (Ideal: Diagonal Line)")
-                
-                prob_true = metrics['Calibration_Data']['prob_true']
-                prob_pred = metrics['Calibration_Data']['prob_pred']
-                
-                fig_cal = go.Figure()
-                fig_cal.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', name='Ideal', line=dict(color='grey', dash='dash')))
-                fig_cal.add_trace(go.Scatter(x=prob_pred, y=prob_true, mode='lines+markers', name='Model', line=dict(color='#1b4d1b')))
-                fig_cal.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), xaxis_title="Predicted Probability", yaxis_title="Actual Win Rate")
-                st.plotly_chart(fig_cal, use_container_width=True)
-            
-            st.markdown("---")
-            
-            # Daily Performance Tracker
-            st.markdown("### 📅 Daily Performance Tracker")
-            
-            daily_display = daily_metrics.copy()
-            daily_display.index.name = "Date"
-            daily_display['Accuracy'] = daily_display['Accuracy'].apply(lambda x: f"{x:.1%}")
-            daily_display['Daily PnL'] = daily_display['Daily_PnL'].apply(lambda x: f"${x:,.0f}")
-            daily_display['MAE'] = daily_display['MAE'].apply(lambda x: f"${x:.2f}")
-            daily_display = daily_display[['Accuracy', 'Daily PnL', 'MAE']].sort_index(ascending=False)
-            
-            st.dataframe(daily_display, use_container_width=True)
-    else:
-        st.warning("Model not found or no data available for performance analysis.")
-    
-    st.markdown("---")
-    
-    # === AZURE LOGS ===
-    st.markdown("### 📜 Historical Logs (Azure)")
-    st.caption("Immutable audit trail of all predictions made by this system.")
-    
-    # Check Azure availability
-    if not AZURE_AVAILABLE:
-        st.warning("⚠️ Azure Logging disabled: Credentials not found. Add AZURE_CONNECTION_STRING to .env or Streamlit secrets.")
-    else:
-        try:
-            df_logs = fetch_all_logs()
-            if not df_logs.empty:
-                st.dataframe(df_logs.sort_values('timestamp_utc', ascending=False), use_container_width=True)
-            else:
-                st.info("No logs found in Azure container yet.")
-        except Exception as e:
-            st.error(f"❌ Error fetching logs: {str(e)[:100]}")
 
 # --- FOOTER ---
 st.markdown("---")
