@@ -110,9 +110,13 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
         raise FileNotFoundError(f"Feature list not found for {ticker}. Train model first.")
 
     # Get the last row of features
-    last_row = current_data_df.iloc[[-1]][feature_cols]
+    last_row = current_data_df.iloc[[-1]]
     
-    prediction = model.predict(last_row)
+    # Ensure features match: select only the expected features in the correct order
+    # Fill missing features with 0
+    last_row_aligned = last_row.reindex(columns=feature_cols, fill_value=0)
+    
+    prediction = model.predict(last_row_aligned.values)
     return prediction[0]
 
 import scipy.stats as stats

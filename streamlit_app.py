@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
+from scipy import stats
 import sys
 import os
 from dotenv import load_dotenv
@@ -40,7 +42,14 @@ from src.evaluation import evaluate_model
 from src.utils import get_market_status, determine_best_timeframe
 from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
 from src.signals import generate_trading_signals
-from src.azure_logger import log_prediction, fetch_all_logs
+
+# Azure Logger with Safety Wrapper
+try:
+    from src.azure_logger import log_prediction, fetch_all_logs
+    AZURE_AVAILABLE = True
+except Exception as e:
+    AZURE_AVAILABLE = False
+    print(f"⚠️ Azure logging disabled: {e}")
 
 st.set_page_config(page_title="Prediction Market Edge Finder", layout="wide")
 
@@ -264,9 +273,13 @@ with tab1:
             # Display Logic: If BUY NO, show 100 - Prob as "Win Prob"
             if "NO" in opp['Action']:
                 win_prob = 100 - opp['Numeric_Prob']
+                # Cap at 99.9% to avoid showing false certainty
+                win_prob = min(win_prob, 99.9)
                 display_prob = f"{win_prob:.1f}%"
             else:
-                display_prob = opp['Prob']
+                # Cap at 99.9% to avoid showing false certainty
+                capped_prob = min(opp['Numeric_Prob'], 99.9)
+                display_prob = f"{capped_prob:.1f}%"
                 
             with col:
                 st.markdown(f"""
@@ -399,21 +412,145 @@ with tab2:
             col2.metric(f"Predicted {internal_timeframe}", f"${prediction:,.2f}", delta=f"{prediction-current_price:,.2f}")
             col3.metric("Target Time", target_time_display)
             
-            # Edge Finder (Deep Dive specific)
-            st.subheader("🎯 Edge Finder")
+            # Bell Curve Visualization (The "Why")
+            st.subheader("📊 Probability Distribution (The Bell Curve)")
+            st.caption("This chart shows where the price is likely to go based on the model's prediction and uncertainty (RMSE).")
+            
+            # Generate signals for strike selection
             signals = generate_trading_signals(selected_ticker, prediction, current_price, rmse)
             
-            dd_tab1, dd_tab2 = st.tabs(["Strikes", "Ranges"])
-            with dd_tab1:
-                st.dataframe(pd.DataFrame(signals['strikes']), use_container_width=True)
-            with dd_tab2:
-                 # Highlight winners
-                def highlight_winner(row):
-                    return ['background-color: #1b4d1b' if row['Is_Winner'] else '' for _ in row]
-                st.dataframe(pd.DataFrame(signals['ranges']).style.apply(highlight_winner, axis=1), use_container_width=True)
+            # Strike Price Selector
+            strike_options = [s['Strike'] for s in signals['strikes']]
+            if strike_options:
+                selected_strike_str = st.selectbox(
+                    "Select Strike Price to Analyze:",
+                    options=strike_options,
+                    help="Choose a strike price to see the probability distribution and win area."
+                )
                 
-            # Log to Azure
-            log_prediction(prediction, current_price, rmse, signals['strikes'], ticker=selected_ticker)
+                # Parse the selected strike (format: "SPX > 5910" or "SPX > $5910")
+                # Remove dollar signs and commas before converting to float
+                selected_strike_value = float(selected_strike_str.split()[-1].replace('$', '').replace(',', ''))
+                
+                # Find the corresponding signal
+                selected_signal = next((s for s in signals['strikes'] if s['Strike'] == selected_strike_str), None)
+                
+                if selected_signal:
+                    # Create Bell Curve
+                    # X-axis: Price range (Prediction +/- 3 standard deviations)
+                    x_min = prediction - 3 * rmse
+                    x_max = prediction + 3 * rmse
+                    x = np.linspace(x_min, x_max, 200)
+                    
+                    # Y-axis: Probability Density Function
+                    y = stats.norm.pdf(x, prediction, rmse)
+                    
+                    # Determine if betting ABOVE or BELOW strike
+                    is_above_bet = ">" in selected_strike_str
+                    
+                    # Create figure
+                    fig = go.Figure()
+                    
+                    # Add the Bell Curve
+                    fig.add_trace(go.Scatter(
+                        x=x, y=y,
+                        mode='lines',
+                        name='Probability Distribution',
+                        line=dict(color='#3b82f6', width=2),
+                        fill='tozeroy',
+                        fillcolor='rgba(59, 130, 246, 0.1)'
+                    ))
+                    
+                    # Add shaded "Win" area
+                    if is_above_bet:
+                        # Shade area to the RIGHT of strike (price > strike)
+                        x_win = x[x >= selected_strike_value]
+                        y_win = stats.norm.pdf(x_win, prediction, rmse)
+                        fill_color = 'rgba(27, 77, 27, 0.3)'  # Green
+                    else:
+                        # Shade area to the LEFT of strike (price < strike)
+                        x_win = x[x <= selected_strike_value]
+                        y_win = stats.norm.pdf(x_win, prediction, rmse)
+                        fill_color = 'rgba(77, 27, 27, 0.3)'  # Red
+                    
+                    fig.add_trace(go.Scatter(
+                        x=x_win, y=y_win,
+                        mode='lines',
+                        name='Win Probability Area',
+                        line=dict(width=0),
+                        fill='tozeroy',
+                        fillcolor=fill_color,
+                        showlegend=True
+                    ))
+                    
+                    # Add vertical line for Strike Price (The "Wall")
+                    fig.add_vline(
+                        x=selected_strike_value,
+                        line_dash="dash",
+                        line_color="red",
+                        line_width=2,
+                        annotation_text=f"Strike: ${selected_strike_value:,.0f}",
+                        annotation_position="top"
+                    )
+                    
+                    # Add vertical line for Current Price
+                    fig.add_vline(
+                        x=current_price,
+                        line_dash="dot",
+                        line_color="yellow",
+                        line_width=2,
+                        annotation_text=f"Current: ${current_price:,.0f}",
+                        annotation_position="bottom left"
+                    )
+                    
+                    # Add vertical line for Predicted Price
+                    fig.add_vline(
+                        x=prediction,
+                        line_dash="solid",
+                        line_color="white",
+                        line_width=1,
+                        annotation_text=f"Predicted: ${prediction:,.0f}",
+                        annotation_position="top right"
+                    )
+                    
+                    # Layout
+                    fig.update_layout(
+                        xaxis_title="Price ($)",
+                        yaxis_title="Probability Density",
+                        height=400,
+                        margin=dict(l=0, r=0, t=30, b=0),
+                        showlegend=True,
+                        legend=dict(x=0.02, y=0.98),
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display Win Probability
+                    prob_numeric = float(selected_signal['Prob'].strip('%'))
+                    # Cap at 99.9%
+                    prob_numeric = min(prob_numeric, 99.9)
+                    
+                    col_a, col_b, col_c = st.columns(3)
+                    col_a.metric("Win Probability", f"{prob_numeric:.1f}%")
+                    col_b.metric("Action", selected_signal['Action'])
+                    col_c.metric("Edge", selected_signal['Edge'])
+                    
+                    st.markdown("---")
+                    
+                    # Show all strikes in an expander
+                    with st.expander("📋 View All Strike Opportunities"):
+                        st.dataframe(pd.DataFrame(signals['strikes']), use_container_width=True)
+            else:
+                st.info("No strike opportunities available for this asset.")
+
+                
+            # Log to Azure (if available)
+            if AZURE_AVAILABLE:
+                try:
+                    log_prediction(prediction, current_price, rmse, signals['strikes'], ticker=selected_ticker)
+                except Exception as e:
+                    st.warning(f"⚠️ Azure logging failed: {str(e)[:100]}")
 
         except Exception as e:
             st.error(f"Prediction Error: {e}")
@@ -485,15 +622,18 @@ with tab4:
     st.subheader("📜 Historical Logs (Azure)")
     st.caption("Immutable audit trail of all predictions made by this system.")
     
-    # Check connection string
-    if not os.getenv("AZURE_CONNECTION_STRING"):
-        st.error("❌ AZURE_CONNECTION_STRING not found in .env file.")
+    # Check Azure availability
+    if not AZURE_AVAILABLE:
+        st.warning("⚠️ Azure Logging disabled: Credentials not found. Add AZURE_CONNECTION_STRING to .env or Streamlit secrets.")
     else:
-        df_logs = fetch_all_logs()
-        if not df_logs.empty:
-            st.dataframe(df_logs.sort_values('timestamp_utc', ascending=False), use_container_width=True)
-        else:
-            st.info("No logs found in Azure container yet.")
+        try:
+            df_logs = fetch_all_logs()
+            if not df_logs.empty:
+                st.dataframe(df_logs.sort_values('timestamp_utc', ascending=False), use_container_width=True)
+            else:
+                st.info("No logs found in Azure container yet.")
+        except Exception as e:
+            st.error(f"❌ Error fetching logs: {str(e)[:100]}")
 
 # --- FOOTER ---
 st.markdown("---")

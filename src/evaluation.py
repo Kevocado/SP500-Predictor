@@ -40,8 +40,18 @@ def evaluate_model(model, df, ticker="SPY"):
     X = df_eval[feature_cols]
     y_actual = df_eval[target_col]
     
-    # Predict
-    y_pred = model.predict(X)
+    # Ensure features match the model's expected features
+    # Try to load the saved feature list for this ticker
+    import joblib
+    import os
+    feature_names_path = os.path.join("model", f"features_{ticker}.pkl")
+    if os.path.exists(feature_names_path):
+        expected_features = joblib.load(feature_names_path)
+        # Reindex to match expected features, fill missing with 0
+        X = X.reindex(columns=expected_features, fill_value=0)
+    
+    # Predict (use .values to pass numpy array to LightGBM Booster)
+    y_pred = model.predict(X.values)
     
     # Create result DataFrame
     results = pd.DataFrame(index=df_eval.index)

@@ -121,8 +121,9 @@ def predict_daily_close(model, current_df_features):
         "Dist_from_Open", "Pct_Change_Day"
     ]
     
-    # Ensure we have the columns
-    X = current_df_features[feature_cols]
+    # Ensure features match: reindex to align with model's expected features
+    # Missing features will be filled with 0
+    X = current_df_features.reindex(columns=feature_cols, fill_value=0)
     prediction = model.predict(X)[0]
     return prediction
 
