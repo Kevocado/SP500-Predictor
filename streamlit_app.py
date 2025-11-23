@@ -165,7 +165,7 @@ if not st.session_state.scan_results['strikes'] and not st.session_state.scan_re
 
 # --- LAYOUT ---
 
-# Top Bar: Title & Refresh
+# Title Bar
 col_title, col_refresh = st.columns([3, 1])
 with col_title:
     st.title("⚡ Prediction Market Edge Finder")
@@ -174,54 +174,40 @@ with col_refresh:
         run_scanner()
         st.rerun()
 
-# Top Navigation (Asset Selector)
+st.markdown("---")
+
+# --- PILLS NAVIGATION (Asset Selector) ---
 st.markdown("### Select Asset")
-selected_ticker = st.radio(
-    "Select Asset", 
-    ["SPX", "Nasdaq", "BTC", "ETH"], 
-    horizontal=True,
+selected_ticker = st.pills(
+    "Asset Selection",
+    options=["SPX", "Nasdaq", "BTC", "ETH"],
+    default="SPX" if 'selected_asset' not in st.session_state else st.session_state.get('selected_asset', 'SPX'),
     label_visibility="collapsed",
-    key="asset_selector"
+    key="asset_pills"
 )
 
-# Smart Timeframe Logic
-# We want to update the timeframe based on the selected asset, BUT only if the asset CHANGED.
-# Since Streamlit reruns on interaction, we can check if selected_ticker changed.
+# Update session state
 if st.session_state.get('last_selected_asset') != selected_ticker:
-    # Asset changed!
+    st.session_state.last_selected_asset = selected_ticker
+    st.session_state.selected_asset = selected_ticker
+    
+    # Smart Timeframe Logic
     recommended_tf = determine_best_timeframe(selected_ticker)
-    # Map internal "Daily" back to UI "End of Day"
     reverse_map = {"Hourly": "Hourly", "Daily": "End of Day"}
     st.session_state.timeframe_view = reverse_map[recommended_tf]
-    st.session_state.last_selected_asset = selected_ticker
     
     if recommended_tf == "Daily" and get_market_status(selected_ticker)['is_open'] == False:
         st.toast(f"Switched to End of Day view (Market Closed for {selected_ticker})", icon="ℹ️")
 
-# Timeframe Selector (Sidebar or Top?)
-# User asked to remove Sidebar selector. Let's put Timeframe near the Nav or in Sidebar?
-# "Top-Level Navigation (Replace Sidebar Selector)" -> Refers to Asset.
-# Let's keep Timeframe in Sidebar for now or move it to top right?
-# Sidebar is fine for settings, but "Smart Timeframe" implies it's active.
-# Let's put it in the sidebar but controllable.
-# Timeframe Selector
-timeframe_view = st.sidebar.radio(
-    "Timeframe", 
-    ["Hourly", "End of Day"], 
-    key="timeframe_view", # Linked to session state
-    help="Hourly: Predicts price 60 mins from now.\nEnd of Day: Predicts closing price at 4:00 PM ET."
-)
+# Determine timeframe (using smart logic, no UI selector needed for now)
+recommended_tf = determine_best_timeframe(selected_ticker)
+timeframe_map = {"Hourly": "Hourly", "Daily": "Daily"}
+internal_timeframe = timeframe_map.get(recommended_tf, "Daily")
 
-# Map "End of Day" back to "Daily" for internal logic if needed, or just use "End of Day" string
-# Let's normalize it to "Daily" for internal logic to avoid breaking everything
-timeframe_map = {"Hourly": "Hourly", "End of Day": "Daily"}
-internal_timeframe = timeframe_map[timeframe_view]
-
-if st.sidebar.button("Retrain Model"):
+# Sidebar: Keep only essential controls
+if st.sidebar.button("🔄 Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
         st.write("Fetching data...")
-        # Logic for retraining (omitted for brevity, keeping existing logic if needed or just placeholder)
-        # Re-implementing the retraining logic briefly
         try:
             df = fetch_data(ticker=selected_ticker, period="7d", interval="1m")
             st.write("Processing features...")
@@ -232,337 +218,297 @@ if st.sidebar.button("Retrain Model"):
         except Exception as e:
             st.error(f"Error: {e}")
 
-# --- MAIN TABS ---
-tab1, tab2, tab3, tab4 = st.tabs(["⚡ Live Scanner", "🔍 Deep Dive", "📈 Model Performance", "📜 History"])
+st.markdown("---")
 
-with tab1:
-    # --- ALPHA DECK ---
-    all_strikes = st.session_state.scan_results['strikes']
-    all_ranges = st.session_state.scan_results['ranges']
+# --- MAIN CONTENT AREA ---
+# We'll have: Alpha Deck → Scanner Table → (Inline Deep Dive when row selected)
+# And a separate Performance tab
+
+# === ALPHA DECK (Hero Section) ===
+st.markdown("### 💎 Alpha Deck")
+
+all_strikes = st.session_state.scan_results['strikes']
+all_ranges = st.session_state.scan_results['ranges']
+
+# Filter for selected asset only
+asset_strikes = [s for s in all_strikes if s['Asset'] == selected_ticker]
+
+if asset_strikes:
+    # Calculate metrics for the selected asset
     
-    if all_strikes:
-        # Sort by Probability (Confidence)
-        # We want the highest CONFIDENCE. 
-        # Confidence = abs(Prob - 50). 99% is high confidence, 1% is high confidence (that it won't happen).
-        
-        # Group by Asset to get the best one for EACH instrument
-        best_per_asset = {}
-        for opp in all_strikes:
-            asset = opp['Asset']
-            confidence = abs(opp['Numeric_Prob'] - 50)
-            
-            if asset not in best_per_asset:
-                best_per_asset[asset] = (opp, confidence)
-            else:
-                if confidence > best_per_asset[asset][1]:
-                    best_per_asset[asset] = (opp, confidence)
-        
-        # Extract the opportunities
-        top_opps = [val[0] for val in best_per_asset.values()]
-        # Sort them by confidence globally just for display order
-        top_opps.sort(key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)
-        
-        st.markdown("### 🔥 Top Opportunities")
-        
-        # Dynamic columns based on how many assets found (max 4)
-        cols = st.columns(len(top_opps))
-        
-        for i, col in enumerate(cols):
-            opp = top_opps[i]
-            
-            # Display Logic: If BUY NO, show 100 - Prob as "Win Prob"
-            if "NO" in opp['Action']:
-                win_prob = 100 - opp['Numeric_Prob']
-                # Cap at 99.9% to avoid showing false certainty
-                win_prob = min(win_prob, 99.9)
-                display_prob = f"{win_prob:.1f}%"
-            else:
-                # Cap at 99.9% to avoid showing false certainty
-                capped_prob = min(opp['Numeric_Prob'], 99.9)
-                display_prob = f"{capped_prob:.1f}%"
-                
-            with col:
-                st.markdown(f"""
-                <div style="padding: 15px; border: 1px solid #333; border-radius: 10px; background-color: #0e1117;">
-                    <h3 style="margin:0; color: #3b82f6;">{opp['Asset']} <span style="font-size:0.6em; color:grey">({opp['Timeframe']})</span></h3>
-                    <p style="font-size: 1.2em; font-weight: bold; margin: 5px 0;">{opp['Strike']}</p>
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="background-color: {'#1b4d1b' if 'YES' in opp['Action'] else '#4d1b1b'}; padding: 2px 8px; border-radius: 4px; font-size: 0.9em;">{opp['Action']}</span>
-                        <span style="font-weight: bold;">{display_prob}</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-        st.markdown("---")
-
-    # --- SCANNER TABLES ---
-    scan_tab1, scan_tab2 = st.tabs(["🎯 Strike Prices (Direction)", "📊 Daily Ranges (Volatility)"])
+    # Metric 1: Best Edge (highest confidence = furthest from 50%)
+    # Edge = how far the probability is from 50% (uncertainty)
+    best_edge_strike = max(asset_strikes, key=lambda x: abs(float(x['Prob'].strip('%')) - 50))
+    best_edge_val = abs(float(best_edge_strike['Prob'].strip('%')) - 50)
     
-    with scan_tab1:
-        if all_strikes:
-            df_strikes = pd.DataFrame(all_strikes)
-            
-            # SORTING: Best Probability (closest to 0 or 100, i.e., highest confidence)
-            # We added 'Numeric_Prob' earlier. Let's use it.
-            # We want rows with Prob > 50 sorted desc, and Prob < 50 sorted asc?
-            # Or just sort by "Edge" (distance from 50%)
-            df_strikes['Edge_Abs'] = abs(df_strikes['Numeric_Prob'] - 50)
-            df_strikes = df_strikes.sort_values('Edge_Abs', ascending=False).drop(columns=['Edge_Abs'])
-            
-            cols = ['Asset', 'Timeframe', 'Date', 'Time', 'Strike', 'Prob', 'Action']
-            
-            def highlight_edge(row):
-                prob = float(row['Prob'].strip('%'))
-                if prob > 70:
-                    return ['background-color: #1b4d1b'] * len(row)
-                elif prob < 30:
-                    return ['background-color: #4d1b1b'] * len(row)
-                return [''] * len(row)
-
-            st.dataframe(df_strikes[cols].style.apply(highlight_edge, axis=1), use_container_width=True)
-        else:
-            st.info("No active strike opportunities found.")
-            
-    with scan_tab2:
-        if all_ranges:
-            def highlight_winner(row):
-                return ['background-color: #1b4d1b' if row['Is_Winner'] else '' for _ in row]
-            
-            df_ranges = pd.DataFrame(all_ranges)
-            
-            # SORTING: Show Winners first
-            df_ranges = df_ranges.sort_values('Is_Winner', ascending=False)
-            
-            cols = ['Asset', 'Timeframe', 'Date', 'Time', 'Range', 'Predicted In Range?', 'Action', 'Is_Winner']
-            st.dataframe(df_ranges[cols].style.apply(highlight_winner, axis=1), use_container_width=True)
-        else:
-            st.info("No range opportunities found.")
-            
-    # --- HELP EXPANDER ---
-    with st.expander("📘 Help & Strategy"):
-        st.markdown("""
-        ### How to use this tool
-        1.  **Check the Alpha Deck:** The top 3 highest-confidence trades are shown at the top.
-        2.  **Scan the Market:** Use the **Strikes** tab for directional bets (Up/Down) and the **Ranges** tab for volatility bets (Price Brackets).
-        3.  **Deep Dive:** Click the "Deep Dive" tab to analyze a specific asset in detail.
-        
-        ### Strategy Guide
-        *   **Strike Prices:** If the model says **🟢 BUY YES**, it means the probability is significantly higher than 50%.
-        *   **Daily Ranges:** Look for the **Green Highlighted** row. This is where the model predicts the price will land.
-        *   **Timeframes:**
-            *   **Hourly:** Best for short-term speculation (Crypto, Active Market Hours).
-            *   **Daily:** Best for "End of Day" closes (Stocks after hours).
-        """)
-
-with tab2:
-    # --- DEEP DIVE ---
-    st.subheader(f"🔍 Deep Dive: {selected_ticker}")
+    # Metric 2: Highest Confidence (probability closest to 0 or 100)
+    highest_conf_strike = max(asset_strikes, key=lambda x: abs(x['Numeric_Prob'] - 50))
+    highest_conf_val = highest_conf_strike['Numeric_Prob']
+    # Cap at 99.9%
+    highest_conf_val = min(highest_conf_val, 99.9)
     
-    # Market Status
-    status = get_market_status(selected_ticker)
-    st.markdown(f"**Status:** <span style='color:{status['color']}; font-weight:bold'>{status['status_text']}</span>", unsafe_allow_html=True)
-    if not status['is_open']:
-        st.caption(f"Next Event: {status['next_event_text']}")
-        
-    # Fetch Data for Deep Dive
-    with st.spinner(f"Analyzing {selected_ticker}..."):
+    # Metric 3: Market Mover (for now, show current prediction vs current price %)
+    # We'll need to fetch this from the current data
+    try:
         if internal_timeframe == "Daily":
-            df = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
-            model = load_daily_model(ticker=selected_ticker)
-        else:
-            df = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
-            model = load_model(ticker=selected_ticker)
-            
-    if df.empty:
-        st.error("Could not load market data.")
-    elif model is None:
-        st.warning(f"Model for {selected_ticker} not found. Please train the model.")
-    else:
-        # Prepare features & Predict
-        try:
-            if internal_timeframe == "Daily":
-                df_features, _ = prepare_daily_data(df)
-                last_row = df_features.iloc[[-1]]
-                prediction = predict_daily_close(model, last_row)
-                current_price = df['Close'].iloc[-1]
-                rmse = current_price * 0.01 
-                
-                last_time = df.index[-1]
-                target_time = last_time.replace(hour=16, minute=0, second=0, microsecond=0)
-                if last_time.time() >= time(16, 0):
-                    target_time += timedelta(days=1)
-                time_str = "4:00 PM (Close)"
+            df_alpha = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
+            model_alpha = load_daily_model(ticker=selected_ticker)
+            if not df_alpha.empty and model_alpha:
+                df_features_alpha, _ = prepare_daily_data(df_alpha)
+                pred_alpha = predict_daily_close(model_alpha, df_features_alpha.iloc[[-1]])
+                curr_alpha = df_alpha['Close'].iloc[-1]
+                move_pct = ((pred_alpha - curr_alpha) / curr_alpha) * 100
             else:
-                df_features = create_features(df)
-                prediction = predict_next_hour(model, df_features, ticker=selected_ticker)
-                current_price = df['Close'].iloc[-1]
-                rmse = get_recent_rmse(model, df, ticker=selected_ticker)
+                move_pct = 0
+        else:
+            df_alpha = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
+            model_alpha = load_model(ticker=selected_ticker)
+            if not df_alpha.empty and model_alpha:
+                df_features_alpha = create_features(df_alpha)
+                pred_alpha = predict_next_hour(model_alpha, df_features_alpha, ticker=selected_ticker)
+                curr_alpha = df_alpha['Close'].iloc[-1]
+                move_pct = ((pred_alpha - curr_alpha) / curr_alpha) * 100
+            else:
+                move_pct = 0
+    except:
+        move_pct = 0
+    
+    # Display 3 metric cards
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(
+            label="💎 Best Edge",
+            value=f"{best_edge_val:.1f}% Confidence",
+            delta=best_edge_strike['Strike'],
+            help=f"Highest confidence opportunity: {best_edge_strike['Action']}"
+        )
+    
+    with col2:
+        st.metric(
+            label="🛡️ Highest Confidence",
+            value=f"{highest_conf_val:.1f}%",
+            delta=highest_conf_strike['Strike'],
+            help=f"Most confident prediction: {highest_conf_strike['Action']}"
+        )
+    
+    with col3:
+        move_label = "⚡ Predicted Move"
+        move_direction = "↑" if move_pct > 0 else "↓" if move_pct < 0 else "→"
+        st.metric(
+            label=move_label,
+            value=f"{move_direction} {abs(move_pct):.2f}%",
+            delta=f"{internal_timeframe}",
+            help="Expected price movement for next timeframe"
+        )
+else:
+    st.info(f"No opportunities found for {selected_ticker}. Try refreshing data.")
+
+st.markdown("---")
+
+# === SCANNER TABLE (Master) ===
+st.markdown("### 📊 Live Scanner")
+
+# Filter strikes for selected asset
+asset_strikes_table = [s for s in all_strikes if s['Asset'] == selected_ticker]
+
+if asset_strikes_table:
+    df_strikes = pd.DataFrame(asset_strikes_table)
+    
+    # SORTING: Best Probability (highest confidence)
+    df_strikes['Edge_Abs'] = abs(df_strikes['Numeric_Prob'] - 50)
+    df_strikes = df_strikes.sort_values('Edge_Abs', ascending=False)
+    
+    # Add index column for selection
+    df_strikes = df_strikes.reset_index(drop=True)
+    df_strikes.insert(0, 'Select', df_strikes.index)
+    
+    # Display columns
+    cols = ['Select', 'Timeframe', 'Date', 'Time', 'Strike', 'Prob', 'Action']
+    
+    def highlight_edge(row):
+        prob = float(row['Prob'].strip('%'))
+        if prob > 70:
+            return ['background-color: #1b4d1b'] * len(row)
+        elif prob < 30:
+            return ['background-color: #4d1b1b'] * len(row)
+        return [''] * len(row)
+
+    st.dataframe(
+        df_strikes[cols].style.apply(highlight_edge, axis=1), 
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    # Row selection input
+    st.markdown("---")
+    selected_row_idx = st.number_input(
+        "🔍 Select Row for Deep Dive (enter number from 'Select' column)",
+        min_value=0,
+        max_value=len(df_strikes) - 1,
+        value=0,
+        step=1,
+        key="row_selector"
+    )
+    
+    # === INLINE DEEP DIVE (Detail) ===
+    if selected_row_idx is not None and selected_row_idx < len(df_strikes):
+        selected_strike = df_strikes.iloc[selected_row_idx]
+        
+        with st.expander(f"🔍 Deep Dive: {selected_strike['Action']} at {selected_strike['Strike']}", expanded=True):
+            st.markdown(f"### Analysis for {selected_strike['Asset']} - {selected_strike['Timeframe']}")
+            st.caption(f"Target: {selected_strike['Date']} at {selected_strike['Time']}")
+            
+            # Fetch fresh data for bell curve
+            try:
+                if selected_strike['Timeframe'] == "Daily":
+                    df_deep = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
+                    model_deep = load_daily_model(ticker=selected_ticker)
+                    if not df_deep.empty and model_deep:
+                        df_features_deep, _ = prepare_daily_data(df_deep)
+                        pred_deep = predict_daily_close(model_deep, df_features_deep.iloc[[-1]])
+                        rmse_deep = df_deep['Close'].iloc[-1] * 0.01
+                        curr_price_deep = df_deep['Close'].iloc[-1]
+                    else:
+                        raise Exception("No data")
+                else:
+                    df_deep = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
+                    model_deep = load_model(ticker=selected_ticker)
+                    if not df_deep.empty and model_deep:
+                        df_features_deep = create_features(df_deep)
+                        pred_deep = predict_next_hour(model_deep, df_features_deep, ticker=selected_ticker)
+                        rmse_deep = get_recent_rmse(model_deep, df_deep, ticker=selected_ticker)
+                        curr_price_deep = df_deep['Close'].iloc[-1]
+                    else:
+                        raise Exception("No data")
                 
-                last_time = df.index[-1]
-                target_time = last_time + timedelta(hours=1)
-                time_str = target_time.strftime("%I:%M %p")
-            
-            now_day = last_time.date()
-            target_day = target_time.date()
-            day_str = "Today" if now_day == target_day else target_time.strftime("%A")
-            target_time_display = f"{time_str} {day_str}"
-            
-            # Display Prediction
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Current Price", f"${current_price:,.2f}")
-            col2.metric(f"Predicted {internal_timeframe}", f"${prediction:,.2f}", delta=f"{prediction-current_price:,.2f}")
-            col3.metric("Target Time", target_time_display)
-            
-            # Bell Curve Visualization (The "Why")
-            st.subheader("📊 Probability Distribution (The Bell Curve)")
-            st.caption("This chart shows where the price is likely to go based on the model's prediction and uncertainty (RMSE).")
-            
-            # Generate signals for strike selection
-            signals = generate_trading_signals(selected_ticker, prediction, current_price, rmse)
-            
-            # Strike Price Selector
-            strike_options = [s['Strike'] for s in signals['strikes']]
-            if strike_options:
-                selected_strike_str = st.selectbox(
-                    "Select Strike Price to Analyze:",
-                    options=strike_options,
-                    help="Choose a strike price to see the probability distribution and win area."
+                # Parse strike price from the selected row
+                strike_str = selected_strike['Strike']
+                # Strike format is typically "$5,500" or similar
+                strike_price = float(strike_str.replace('$', '').replace(',', ''))
+                
+                # Calculate probability using the model's prediction distribution
+                prob_val = calculate_probability(pred_deep, rmse_deep, strike_price, selected_strike['Action'])
+                
+                # Create bell curve visualization
+                st.markdown("#### 📊 Probability Distribution")
+                
+                # Generate x-axis (price range)
+                x_min = pred_deep - 4 * rmse_deep
+                x_max = pred_deep + 4 * rmse_deep
+                x = np.linspace(x_min, x_max, 500)
+                
+                # Normal distribution PDF
+                y = stats.norm.pdf(x, pred_deep, rmse_deep)
+                
+                # Create Plotly figure
+                fig = go.Figure()
+                
+                # Add distribution curve
+                fig.add_trace(go.Scatter(
+                    x=x, y=y,
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Probability Distribution',
+                    line=dict(color='#3b82f6', width=2)
+                ))
+                
+                # Highlight the region based on action
+                if selected_strike['Action'] == 'Call':
+                    # Shade area above strike
+                    mask = x >= strike_price
+                    fig.add_trace(go.Scatter(
+                        x=x[mask], y=y[mask],
+                        mode='lines',
+                        fill='tozeroy',
+                        name=f'Prob Above {strike_str}',
+                        line=dict(color='#1b4d1b', width=0),
+                        fillcolor='rgba(27, 77, 27, 0.3)'
+                    ))
+                else:  # Put
+                    # Shade area below strike
+                    mask = x <= strike_price
+                    fig.add_trace(go.Scatter(
+                        x=x[mask], y=y[mask],
+                        mode='lines',
+                        fill='tozeroy',
+                        name=f'Prob Below {strike_str}',
+                        line=dict(color='#4d1b1b', width=0),
+                        fillcolor='rgba(77, 27, 27, 0.3)'
+                    ))
+                
+                # Add vertical lines for prediction, current price, and strike
+                fig.add_vline(x=pred_deep, line_dash="dash", line_color="yellow", annotation_text="Predicted", annotation_position="top")
+                fig.add_vline(x=curr_price_deep, line_dash="dash", line_color="white", annotation_text="Current", annotation_position="top")
+                fig.add_vline(x=strike_price, line_color="red", line_width=3, annotation_text="Strike", annotation_position="top")
+                
+                fig.update_layout(
+                    title=f"Probability: {selected_strike['Prob']}",
+                    xaxis_title="Price",
+                    yaxis_title="Probability Density",
+                    height=400,
+                    showlegend=True,
+                    hovermode='x unified'
                 )
                 
-                # Parse the selected strike (format: "SPX > 5910" or "SPX > $5910")
-                # Remove dollar signs and commas before converting to float
-                selected_strike_value = float(selected_strike_str.split()[-1].replace('$', '').replace(',', ''))
+                st.plotly_chart(fig, use_container_width=True)
                 
-                # Find the corresponding signal
-                selected_signal = next((s for s in signals['strikes'] if s['Strike'] == selected_strike_str), None)
+                # Show key metrics
+                col_d1, col_d2, col_d3 = st.columns(3)
+                col_d1.metric("Current Price", f"${curr_price_deep:,.2f}")
+                col_d2.metric("Predicted Price", f"${pred_deep:,.2f}", f"{((pred_deep - curr_price_deep) / curr_price_deep * 100):+.2f}%")
+                col_d3.metric("Model Uncertainty (σ)", f"${rmse_deep:,.2f}")
                 
-                if selected_signal:
-                    # Create Bell Curve
-                    # X-axis: Price range (Prediction +/- 3 standard deviations)
-                    x_min = prediction - 3 * rmse
-                    x_max = prediction + 3 * rmse
-                    x = np.linspace(x_min, x_max, 200)
-                    
-                    # Y-axis: Probability Density Function
-                    y = stats.norm.pdf(x, prediction, rmse)
-                    
-                    # Determine if betting ABOVE or BELOW strike
-                    is_above_bet = ">" in selected_strike_str
-                    
-                    # Create figure
-                    fig = go.Figure()
-                    
-                    # Add the Bell Curve
-                    fig.add_trace(go.Scatter(
-                        x=x, y=y,
-                        mode='lines',
-                        name='Probability Distribution',
-                        line=dict(color='#3b82f6', width=2),
-                        fill='tozeroy',
-                        fillcolor='rgba(59, 130, 246, 0.1)'
-                    ))
-                    
-                    # Add shaded "Win" area
-                    if is_above_bet:
-                        # Shade area to the RIGHT of strike (price > strike)
-                        x_win = x[x >= selected_strike_value]
-                        y_win = stats.norm.pdf(x_win, prediction, rmse)
-                        fill_color = 'rgba(27, 77, 27, 0.3)'  # Green
-                    else:
-                        # Shade area to the LEFT of strike (price < strike)
-                        x_win = x[x <= selected_strike_value]
-                        y_win = stats.norm.pdf(x_win, prediction, rmse)
-                        fill_color = 'rgba(77, 27, 27, 0.3)'  # Red
-                    
-                    fig.add_trace(go.Scatter(
-                        x=x_win, y=y_win,
-                        mode='lines',
-                        name='Win Probability Area',
-                        line=dict(width=0),
-                        fill='tozeroy',
-                        fillcolor=fill_color,
-                        showlegend=True
-                    ))
-                    
-                    # Add vertical line for Strike Price (The "Wall")
-                    fig.add_vline(
-                        x=selected_strike_value,
-                        line_dash="dash",
-                        line_color="red",
-                        line_width=2,
-                        annotation_text=f"Strike: ${selected_strike_value:,.0f}",
-                        annotation_position="top"
-                    )
-                    
-                    # Add vertical line for Current Price
-                    fig.add_vline(
-                        x=current_price,
-                        line_dash="dot",
-                        line_color="yellow",
-                        line_width=2,
-                        annotation_text=f"Current: ${current_price:,.0f}",
-                        annotation_position="bottom left"
-                    )
-                    
-                    # Add vertical line for Predicted Price
-                    fig.add_vline(
-                        x=prediction,
-                        line_dash="solid",
-                        line_color="white",
-                        line_width=1,
-                        annotation_text=f"Predicted: ${prediction:,.0f}",
-                        annotation_position="top right"
-                    )
-                    
-                    # Layout
-                    fig.update_layout(
-                        xaxis_title="Price ($)",
-                        yaxis_title="Probability Density",
-                        height=400,
-                        margin=dict(l=0, r=0, t=30, b=0),
-                        showlegend=True,
-                        legend=dict(x=0.02, y=0.98),
-                        hovermode='x unified'
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Display Win Probability
-                    prob_numeric = float(selected_signal['Prob'].strip('%'))
-                    # Cap at 99.9%
-                    prob_numeric = min(prob_numeric, 99.9)
-                    
-                    col_a, col_b, col_c = st.columns(3)
-                    col_a.metric("Win Probability", f"{prob_numeric:.1f}%")
-                    col_b.metric("Action", selected_signal['Action'])
-                    col_c.metric("Edge", selected_signal['Edge'])
-                    
-                    st.markdown("---")
-                    
-                    # Show all strikes in an expander
-                    with st.expander("📋 View All Strike Opportunities"):
-                        st.dataframe(pd.DataFrame(signals['strikes']), use_container_width=True)
-            else:
-                st.info("No strike opportunities available for this asset.")
+            except Exception as e:
+                st.error(f"Unable to load Deep Dive data: {e}")
+        
+else:
+    st.info(f"No strike opportunities found for {selected_ticker}. Try refreshing data.")
 
-                
-            # Log to Azure (if available)
-            if AZURE_AVAILABLE:
-                try:
-                    log_prediction(prediction, current_price, rmse, signals['strikes'], ticker=selected_ticker)
-                except Exception as e:
-                    st.warning(f"⚠️ Azure logging failed: {str(e)[:100]}")
+st.markdown("---")
 
-        except Exception as e:
-            st.error(f"Prediction Error: {e}")
-
-with tab3:
-    # --- MODEL PERFORMANCE ---
-    st.subheader("Model Accuracy Over Time")
+# === HELP SECTION ===
+with st.expander("📘 Help & Strategy"):
+    st.markdown("""
+    ### How to use this tool
+    1.  **Check the Alpha Deck:** The top 3 metrics show the best opportunities for the selected asset.
+    2.  **Scan the Table:** Review all strikes sorted by confidence.
+    3.  **Deep Dive:** Click a row to see detailed probability analysis.
     
-    if 'model' in locals() and model is not None and not df.empty:
+    ### Strategy Guide
+    *   **Best Edge:** The strike with the highest edge (model prob vs market)  
+    *   **Highest Confidence:** The most certain prediction
+    *   **Predicted Move:** Expected price change for the next timeframe
+    """)
+
+# === TABS: Main Page is default, Performance is separate ===
+main_tab, perf_tab = st.tabs(["📊 Trading Dashboard", "📈 Model Performance & History"])
+
+with main_tab:
+    # This tab is empty because all content is already on the main page above
+    # The trading content (Alpha Deck + Scanner) is rendered before the tabs
+    st.info("👆 All trading information is displayed above. Use the Performance tab to review model accuracy and history.")
+
+with perf_tab:
+    st.markdown("### 📈 Model Performance & Analytics")
+    st.caption(f"Historical performance metrics for {selected_ticker}")
+    
+    # Fetch data for performance analysis
+    try:
+        if internal_timeframe == "Daily":
+            df_perf = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
+            model_perf = load_daily_model(ticker=selected_ticker)
+        else:
+            df_perf = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
+            model_perf = load_model(ticker=selected_ticker)
+    except:
+        df_perf = pd.DataFrame()
+        model_perf = None
+    
+    if model_perf is not None and not df_perf.empty:
         with st.spinner("Calculating historical performance..."):
             try:
-                results, metrics, daily_metrics = evaluate_model(model, df, ticker=selected_ticker)
+                results, metrics, daily_metrics = evaluate_model(model_perf, df_perf, ticker=selected_ticker)
             except Exception as e:
                 st.error(f"Error calculating metrics: {e}")
                 results = pd.DataFrame()
@@ -617,9 +563,13 @@ with tab3:
             daily_display = daily_display[['Accuracy', 'Daily PnL', 'MAE']].sort_index(ascending=False)
             
             st.dataframe(daily_display, use_container_width=True)
-
-with tab4:
-    st.subheader("📜 Historical Logs (Azure)")
+    else:
+        st.warning("Model not found or no data available for performance analysis.")
+    
+    st.markdown("---")
+    
+    # === AZURE LOGS ===
+    st.markdown("### 📜 Historical Logs (Azure)")
     st.caption("Immutable audit trail of all predictions made by this system.")
     
     # Check Azure availability
