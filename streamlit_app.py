@@ -355,12 +355,48 @@ display_market_context()
 # DEBUG: Show Kalshi API Status on-screen
 with st.expander("🔍 Kalshi API Debug (Expand to see data)", expanded=False):
     st.caption("This shows what data is being received from Kalshi.")
+    
+    # Test one ticker in detail
+    st.markdown("### Detailed Test: BTC")
+    try:
+        import requests
+        params = {"limit": 10, "status": "open"}
+        headers = {}
+        api_key = os.getenv("KALSHI_API_KEY")
+        
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+            st.success(f"✅ API Key found (length: {len(api_key)})")
+        else:
+            st.error("❌ No API Key found in environment")
+        
+        response = requests.get("https://api.elections.kalshi.com/trade-api/v2/markets", params=params, headers=headers if api_key else None)
+        
+        st.write(f"**Status Code:** {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            markets = data.get('markets', [])
+            st.write(f"**Total Markets:** {len(markets)}")
+            
+            if markets:
+                st.write("**First 3 markets:**")
+                for m in markets[:3]:
+                    st.json(m)
+        else:
+            st.error(f"Error: {response.text[:500]}")
+    except Exception as e:
+        st.error(f"Exception: {str(e)}")
+    
+    st.markdown("---")
+    
     for ticker in ["SPX", "Nasdaq", "BTC", "ETH"]:
         markets = get_real_kalshi_markets(ticker)
         st.markdown(f"**{ticker}:** {len(markets)} markets found")
         if markets:
             for m in markets[:3]:  # Show first 3
                 st.caption(f"  Strike: {m.get('strike_price')} | Yes Bid: {m.get('yes_bid')}¢ | No Bid: {m.get('no_bid')}¢")
+
 
 st.markdown("---")
 
