@@ -265,11 +265,9 @@ def run_scanner(timeframe_override=None):
                             model_prob_win = s['Numeric_Prob'] if "BUY YES" in s['Action'] else (100 - s['Numeric_Prob'])
                             cost = rm['yes_bid'] if "BUY YES" in s['Action'] else rm['no_bid']
                             
-                            if cost > 0:
-                                s['Real_Edge'] = model_prob_win - cost
-                                s['Has_Real_Data'] = True
-                            else:
-                                s['Has_Real_Data'] = False
+                            # Always calculate edge and show data (even if one side has 0 liquidity)
+                            s['Real_Edge'] = model_prob_win - cost
+                            s['Has_Real_Data'] = True
                         else:
                             s['Has_Real_Data'] = False
                     except:
