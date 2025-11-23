@@ -6,3 +6,4 @@ model/
 *.pkl
 Data/
 wandb/
+.streamlit/secrets.toml

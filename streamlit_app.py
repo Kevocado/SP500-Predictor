@@ -12,16 +12,23 @@ current_dir = Path(__file__).parent
 env_path = current_dir / '.env'
 load_dotenv(dotenv_path=env_path)
 
-# Fallback: Try loading from default location if explicit path failed
+# Hybrid Loading: .env (Local/Backend) vs st.secrets (Streamlit Cloud)
+# If AZURE_CONNECTION_STRING is missing (e.g., on Cloud where .env is gitignored),
+# try to load it from Streamlit Secrets into os.environ for compatibility.
 if not os.getenv("AZURE_CONNECTION_STRING"):
-    print(f"⚠️ Explicit .env load failed from {env_path}. Trying default load_dotenv().")
-    load_dotenv()
+    try:
+        if "AZURE_CONNECTION_STRING" in st.secrets:
+            os.environ["AZURE_CONNECTION_STRING"] = st.secrets["AZURE_CONNECTION_STRING"]
+            print("✅ Loaded AZURE_CONNECTION_STRING from st.secrets (Cloud Mode)")
+    except FileNotFoundError:
+        # st.secrets not found (local without .streamlit/secrets.toml)
+        pass
 
-# Debug
-if not os.getenv("AZURE_CONNECTION_STRING"):
-    print("❌ AZURE_CONNECTION_STRING still not found.")
+# Debug Status
+if os.getenv("AZURE_CONNECTION_STRING"):
+    print("✅ Azure Connection String is SET.")
 else:
-    print("✅ AZURE_CONNECTION_STRING loaded successfully.")
+    print("❌ Azure Connection String is MISSING. Check .env or secrets.toml.")
 
 # Add src to path so we can import modules
 # sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -58,7 +65,7 @@ def run_scanner(timeframe_override=None):
     # Actually, the scanner should probably scan based on the "Best" timeframe for each asset?
     # Or should it respect a global "Scan Mode"?
     # The prompt says: "When the user switches assets... automatically switch the Timeframe toggle".
-    # But for the *Scanner* (which shows ALL assets), what timeframe does it use?
+    # But for the *Scanner* (which shows ALL assets), what timeframe does it uses?
     # Ideally, it scans each asset in its BEST timeframe.
     # Let's implement "Smart Scanning": Scan each asset in its optimal timeframe.
     
@@ -226,6 +233,8 @@ with tab1:
     
     if all_strikes:
         # Sort by Probability (Confidence)
+        # We want the highest CONFIDENCE. 
+        # Confidence = abs(Prob - 50). 99% is high confidence, 1% is high confidence (that it won't happen).
         top_opps = sorted(all_strikes, key=lambda x: abs(x['Numeric_Prob'] - 50), reverse=True)[:3]
         
         st.markdown("### 🔥 Top Opportunities (Alpha Deck)")
@@ -234,6 +243,14 @@ with tab1:
         for i, col in enumerate([c1, c2, c3]):
             if i < len(top_opps):
                 opp = top_opps[i]
+                
+                # Display Logic: If BUY NO, show 100 - Prob as "Win Prob"
+                if "NO" in opp['Action']:
+                    win_prob = 100 - opp['Numeric_Prob']
+                    display_prob = f"{win_prob:.1f}%"
+                else:
+                    display_prob = opp['Prob']
+                    
                 with col:
                     st.markdown(f"""
                     <div style="padding: 15px; border: 1px solid #333; border-radius: 10px; background-color: #0e1117;">
@@ -241,7 +258,7 @@ with tab1:
                         <p style="font-size: 1.2em; font-weight: bold; margin: 5px 0;">{opp['Strike']}</p>
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="background-color: {'#1b4d1b' if 'YES' in opp['Action'] else '#4d1b1b'}; padding: 2px 8px; border-radius: 4px; font-size: 0.9em;">{opp['Action']}</span>
-                            <span style="font-weight: bold;">{opp['Prob']}</span>
+                            <span style="font-weight: bold;">{display_prob}</span>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
