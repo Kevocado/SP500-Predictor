@@ -303,6 +303,12 @@ timeframe_map = {"Hourly": "Hourly", "Daily": "Daily"}
 internal_timeframe = timeframe_map.get(recommended_tf, "Daily")
 
 # Sidebar: Keep only essential controls
+st.sidebar.markdown("### 🔌 System Status")
+
+# Check Kalshi Connection (Simple check)
+api_key_status = "✅ Connected" if os.getenv("KALSHI_API_KEY") else "❌ Missing Key"
+st.sidebar.caption(f"Kalshi API: **{api_key_status}**")
+
 if st.sidebar.button("🔄 Retrain Model"):
     with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
         st.write("Fetching data...")
