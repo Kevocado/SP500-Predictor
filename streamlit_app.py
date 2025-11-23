@@ -465,131 +465,57 @@ if st.sidebar.button("🔄 Retrain Model"):
         except Exception as e:
             st.error(f"Error: {e}")
 
+st.sidebar.markdown("---")
+
+# DEBUG TOOLS
+with st.sidebar.expander("🔧 Dev Tools"):
+    st.caption("Kalshi API Debug Information")
+    
+    # Test one ticker in detail
+    st.markdown("**Quick Test: BTC**")
+    try:
+        import requests
+        params = {"limit": 10, "status": "open"}
+        headers = {}
+        api_key = os.getenv("KALSHI_API_KEY")
+        
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+            st.caption("✅ Using API Key")
+        else:
+            st.caption("⚠️ No API Key")
+            
+        url = "https://api.elections.kalshi.com/trade-api/v2/markets"
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            markets = data.get('markets', [])
+            st.write(f"**Total Markets:** {len(markets)}")
+            
+            if markets:
+                st.write("**First 2 markets:**")
+                for m in markets[:2]:
+                    st.json(m)
+        else:
+            st.error(f"Error: {response.text[:200]}")
+    except Exception as e:
+        st.error(f"Exception: {str(e)}")
+    
+    st.markdown("---")
+    
+    for ticker in ["SPX", "Nasdaq", "BTC", "ETH"]:
+        markets = get_real_kalshi_markets(ticker)
+        st.markdown(f"**{ticker}:** {len(markets)} markets")
+        if markets:
+            for m in markets[:2]:
+                st.caption(f"Strike: {m.get('strike_price')} | Yes: {m.get('yes_bid')}¢")
+
 st.markdown("---")
 
 # --- MAIN CONTENT AREA ---
 all_strikes = st.session_state.scan_results['strikes']
 all_ranges = st.session_state.scan_results['ranges']
-
-# === DEEP DIVE SECTION (Master Detail) ===
-if 'selected_strike' in st.session_state and st.session_state.selected_strike:
-    selected_strike = st.session_state.selected_strike
-    # Ensure it matches current asset to avoid confusion
-    if selected_strike['Asset'] == selected_ticker:
-        st.markdown("---")
-        with st.expander(f"🔍 Deep Dive: {selected_strike['Action']} at {selected_strike['Strike']}", expanded=True):
-            st.markdown(f"### Analysis for {selected_strike['Asset']} - {selected_strike['Timeframe']}")
-            st.caption(f"Target: {selected_strike['Date']} at {selected_strike['Time']}")
-            
-            # Fetch fresh data for bell curve
-            try:
-                if selected_strike['Timeframe'] == "Daily" or selected_strike['Timeframe'] == "End of Day":
-                    df_deep = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
-                    model_deep = load_daily_model(ticker=selected_ticker)
-                    if not df_deep.empty and model_deep:
-                        df_features_deep, _ = prepare_daily_data(df_deep)
-                        pred_deep = predict_daily_close(model_deep, df_features_deep.iloc[[-1]])
-                        rmse_deep = df_deep['Close'].iloc[-1] * 0.01
-                        curr_price_deep = df_deep['Close'].iloc[-1]
-                    else:
-                        raise Exception("No data")
-                else:
-                    df_deep = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
-                    model_deep = load_model(ticker=selected_ticker)
-                    if not df_deep.empty and model_deep:
-                        df_features_deep = create_features(df_deep)
-                        pred_deep = predict_next_hour(model_deep, df_features_deep, ticker=selected_ticker)
-                        rmse_deep = get_recent_rmse(model_deep, df_deep, ticker=selected_ticker)
-                        curr_price_deep = df_deep['Close'].iloc[-1]
-                    else:
-                        raise Exception("No data")
-                
-                # Parse strike price from the selected row
-                strike_str = str(selected_strike['Strike'])
-                # Clean the string: Remove '>', '$', and whitespace
-                strike_price = float(strike_str.replace('>', '').replace('$', '').replace(',', '').strip())
-                
-                # Calculate probability using the model's prediction distribution
-                # FIX: Removed 4th argument (current_price) which caused TypeError
-                prob_val = calculate_probability(pred_deep, strike_price, rmse_deep)
-                
-                # Create bell curve visualization
-                st.markdown("#### 📊 Probability Distribution")
-                
-                # Generate x-axis (price range)
-                x_min = pred_deep - 4 * rmse_deep
-                x_max = pred_deep + 4 * rmse_deep
-                x = np.linspace(x_min, x_max, 500)
-                
-                # Normal distribution PDF
-                y = stats.norm.pdf(x, pred_deep, rmse_deep)
-                
-                # Create Plotly figure
-                fig = go.Figure()
-                
-                # Add distribution curve
-                fig.add_trace(go.Scatter(
-                    x=x, y=y,
-                    mode='lines',
-                    fill='tozeroy',
-                    name='Probability Distribution',
-                    line=dict(color='#3b82f6', width=2)
-                ))
-                
-                # Highlight the region based on action
-                if "BUY YES" in selected_strike['Action']:
-                    # Shade area above strike
-                    mask = x >= strike_price
-                    fig.add_trace(go.Scatter(
-                        x=x[mask], y=y[mask],
-                        mode='lines',
-                        fill='tozeroy',
-                        name=f'Prob Above {strike_str}',
-                        line=dict(color='#22c55e', width=0),
-                        fillcolor='rgba(34, 197, 94, 0.3)' # Green with opacity
-                    ))
-                else:  # BUY NO
-                    # Shade area below strike
-                    mask = x <= strike_price
-                    fig.add_trace(go.Scatter(
-                        x=x[mask], y=y[mask],
-                        mode='lines',
-                        fill='tozeroy',
-                        name=f'Prob Below {strike_str}',
-                        line=dict(color='#ef4444', width=0),
-                        fillcolor='rgba(239, 68, 68, 0.3)' # Red with opacity
-                    ))
-                
-                # Add vertical lines for prediction, current price, and strike
-                fig.add_vline(x=pred_deep, line_dash="dash", line_color="orange", annotation_text="Predicted", annotation_position="top")
-                # Current price needs to be visible in both modes. 'gray' is usually safe.
-                fig.add_vline(x=curr_price_deep, line_dash="dash", line_color="gray", annotation_text="Current", annotation_position="top")
-                fig.add_vline(x=strike_price, line_color="#ef4444", line_width=3, annotation_text="Strike", annotation_position="top")
-                
-                fig.update_layout(
-                    title=f"Probability: {selected_strike['Prob']}",
-                    xaxis_title="Price",
-                    yaxis_title="Probability Density",
-                    height=400,
-                    showlegend=True,
-                    hovermode='x unified'
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Show key metrics
-                col_d1, col_d2, col_d3 = st.columns(3)
-                col_d1.metric("Current Price", f"${curr_price_deep:,.2f}")
-                col_d2.metric("Predicted Price", f"${pred_deep:,.2f}", f"{((pred_deep - curr_price_deep) / curr_price_deep * 100):+.2f}%")
-                col_d3.metric("Model Uncertainty (σ)", f"${rmse_deep:,.2f}")
-                
-            except Exception as e:
-                st.error(f"Unable to load Deep Dive data: {e}")
-
-st.markdown("---")
-
-# === OPPORTUNITY BOARD (Sectioned Cards) ===
-st.markdown("### 📋 Trade Opportunity Board")
 
 # Filter strikes for selected asset
 asset_strikes_board = [s for s in all_strikes if s['Asset'] == selected_ticker]
@@ -605,8 +531,15 @@ try:
 except:
     curr_alpha = 0
 
-# Tabs for Sections
-tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly Snipes", "📅 Daily Close", "🎯 Ranges"])
+# === MASTER-DETAIL SPLIT LAYOUT ===
+col_feed, col_analysis = st.columns([1.6, 1], gap="medium")
+
+# LEFT COLUMN: Trade Opportunity Board
+with col_feed:
+    st.markdown("### 📋 Trade Opportunity Board")
+    
+    # Tabs for Sections
+    tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly Snipes", "📅 Daily Close", "🎯 Ranges"])
 
 with tab_hourly:
     st.caption("Short-term opportunities expiring in < 60 mins")
@@ -725,7 +658,7 @@ with tab_hourly:
                     st.markdown(f"**{edge_str}**")
                     
                     if st.button("Analyze", key=f"dd_h_{i}_{op['Strike']}"):
-                        st.session_state.selected_strike = op
+                        st.session_state.selected_trade_index = ('hourly', i, op)
                         st.rerun()
     else:
         st.info("No Hourly opportunities found.")
@@ -832,7 +765,7 @@ with tab_daily:
                     st.markdown(f"**{edge_str}**")
                     
                     if st.button("Analyze", key=f"dd_d_{i}_{op['Strike']}"):
-                        st.session_state.selected_strike = op
+                        st.session_state.selected_trade_index = ('daily', i, op)
                         st.rerun()
     else:
         st.info("No Daily opportunities found.")
@@ -851,6 +784,121 @@ with tab_ranges:
     else:
         st.info("No Range opportunities found.")
 
+# RIGHT COLUMN: Deep Dive Analysis
+with col_analysis:
+    st.markdown("### 🔬 Deep Dive Analysis")
+    
+    if 'selected_trade_index' in st.session_state and st.session_state.selected_trade_index:
+        _, _, selected_strike = st.session_state.selected_trade_index
+        
+        # Ensure it matches current asset
+        if selected_strike['Asset'] == selected_ticker:
+            st.markdown(f"**{selected_strike['Action']} at {selected_strike['Strike']}**")
+            st.caption(f"Target: {selected_strike['Date']} at {selected_strike['Time']}")
+            
+            # Fetch fresh data for bell curve
+            try:
+                if selected_strike['Timeframe'] == "Daily" or selected_strike['Timeframe'] == "End of Day":
+                    df_deep = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
+                    model_deep = load_daily_model(ticker=selected_ticker)
+                    if not df_deep.empty and model_deep:
+                        df_features_deep, _ = prepare_daily_data(df_deep)
+                        pred_deep = predict_daily_close(model_deep, df_features_deep.iloc[[-1]])
+                        rmse_deep = df_deep['Close'].iloc[-1] * 0.01
+                        curr_price_deep = df_deep['Close'].iloc[-1]
+                    else:
+                        raise Exception("No data")
+                else:
+                    df_deep = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
+                    model_deep = load_model(ticker=selected_ticker)
+                    if not df_deep.empty and model_deep:
+                        df_features_deep = create_features(df_deep)
+                        pred_deep = predict_next_hour(model_deep, df_features_deep, ticker=selected_ticker)
+                        rmse_deep = get_recent_rmse(model_deep, df_deep, ticker=selected_ticker)
+                        curr_price_deep = df_deep['Close'].iloc[-1]
+                    else:
+                        raise Exception("No data")
+                
+                # Parse strike price
+                strike_str = str(selected_strike['Strike'])
+                strike_price = float(strike_str.replace('>', '').replace('$', '').replace(',', '').strip())
+                
+                # Calculate probability
+                prob_val = calculate_probability(pred_deep, strike_price, rmse_deep)
+                
+                # Create bell curve visualization
+                st.markdown("#### 📊 Probability Distribution")
+                
+                # Generate x-axis (price range)
+                x_min = pred_deep - 4 * rmse_deep
+                x_max = pred_deep + 4 * rmse_deep
+                x = np.linspace(x_min, x_max, 500)
+                
+                # Normal distribution PDF
+                y = stats.norm.pdf(x, pred_deep, rmse_deep)
+                
+                # Create Plotly figure
+                fig = go.Figure()
+                
+                # Add distribution curve
+                fig.add_trace(go.Scatter(
+                    x=x, y=y,
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Probability Distribution',
+                    line=dict(color='#3b82f6', width=2)
+                ))
+                
+                # Highlight the region based on action
+                if "BUY YES" in selected_strike['Action']:
+                    mask = x >= strike_price
+                    fig.add_trace(go.Scatter(
+                        x=x[mask], y=y[mask],
+                        mode='lines',
+                        fill='tozeroy',
+                        name=f'Prob Above {strike_str}',
+                        line=dict(color='#22c55e', width=0),
+                        fillcolor='rgba(34, 197, 94, 0.3)'
+                    ))
+                else:
+                    mask = x <= strike_price
+                    fig.add_trace(go.Scatter(
+                        x=x[mask], y=y[mask],
+                        mode='lines',
+                        fill='tozeroy',
+                        name=f'Prob Below {strike_str}',
+                        line=dict(color='#ef4444', width=0),
+                        fillcolor='rgba(239, 68, 68, 0.3)'
+                    ))
+                
+                # Add vertical lines
+                fig.add_vline(x=pred_deep, line_dash="dash", line_color="orange", annotation_text="Predicted", annotation_position="top")
+                fig.add_vline(x=curr_price_deep, line_dash="dash", line_color="gray", annotation_text="Current", annotation_position="top")
+                fig.add_vline(x=strike_price, line_color="#ef4444", line_width=3, annotation_text="Strike", annotation_position="top")
+                
+                fig.update_layout(
+                    title=f"Probability: {selected_strike['Prob']}",
+                    xaxis_title="Price",
+                    yaxis_title="Probability Density",
+                    height=400,
+                    showlegend=True,
+                    hovermode='x unified'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show key metrics
+                col_d1, col_d2, col_d3 = st.columns(3)
+                col_d1.metric("Current", f"${curr_price_deep:,.2f}")
+                col_d2.metric("Predicted", f"${pred_deep:,.2f}", f"{((pred_deep - curr_price_deep) / curr_price_deep * 100):+.2f}%")
+                col_d3.metric("Uncertainty", f"${rmse_deep:,.2f}")
+                
+            except Exception as e:
+                st.error(f"Unable to load analysis: {e}")
+        else:
+            st.info(f"👈 Selected trade is for {selected_strike['Asset']}, but you're viewing {selected_ticker}. Please switch assets or select a different trade.")
+    else:
+        st.info("👈 Select a trade from the board to view deep-dive analysis.")
 
 st.markdown("---")
 
