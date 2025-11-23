@@ -778,8 +778,8 @@ with tab_hourly:
         hourly_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
         
         for i, op in enumerate(hourly_ops):
-    # Highlight top 3 Alpha Picks
-    alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
+            # Highlight top 3 Alpha Picks
+            alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
             with st.container(border=True):
                 # Deal Ticket Layout: 2 Columns
                 c1, c2 = st.columns([1.5, 1])
@@ -897,8 +897,8 @@ with tab_daily:
         daily_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
         
         for i, op in enumerate(daily_ops):
-    # Highlight top 3 Alpha Picks
-    alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
+            # Highlight top 3 Alpha Picks
+            alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
             with st.container(border=True):
                 # Deal Ticket Layout: 2 Columns
                 c1, c2 = st.columns([1.5, 1])
