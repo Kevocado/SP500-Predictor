@@ -45,6 +45,10 @@ def get_real_kalshi_markets(ticker):
         "error": None
     }
 
+    headers = {}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
     # --- STEP A: Targeted Fetch (Precise) ---
     try:
         debug_info["targeted_attempted"] = True
@@ -122,9 +126,9 @@ def get_real_kalshi_markets(ticker):
                 debug_info["step"] = "Fallback Success"
                 return process_markets(filtered_markets, ticker), "Fallback (Broad)", debug_info
             else:
-                print("   ❌ Fallback found 0 matching markets.")
+                print("   ⚠️ Fallback found 0 matching markets.")
                 debug_info["step"] = "Fallback Zero"
-                return [], "Failed (0 Found)", debug_info
+                return [], "Empty (0 Found)", debug_info
         else:
             print(f"   ❌ Fallback fetch failed: {fb_response.status_code}")
             debug_info["error"] = f"Fallback HTTP {fb_response.status_code}"

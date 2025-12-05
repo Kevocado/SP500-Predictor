@@ -785,6 +785,18 @@ with tab_hourly:
     st.caption("Short-term opportunities expiring in < 3 hours")
     hourly_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Hourly"]
     
+    if not hourly_ops:
+        # Check if it's an API empty state or just filtering
+        sel = st.session_state.get('selected_asset', 'SPX')
+        debug_data = st.session_state.get('fetch_debug', {}).get(sel, {})
+        method = debug_data.get('method', '')
+        
+        if "Empty" in method or "0" in method:
+            st.info(f"ℹ️ No open markets found for {sel}. Markets might be closed (e.g. after 4:15 PM ET) or no short-term contracts available.")
+            st.caption("System Health: Fetched 0 markets. Check Dev Tools for details.")
+        else:
+            st.info("No opportunities found matching your filters. Try adjusting 'Min Edge' or 'Moneyness'.")
+    
     if hourly_ops:
         # Sort by Edge (Confidence)
         hourly_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
