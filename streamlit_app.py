@@ -272,12 +272,16 @@ def run_scanner(timeframe_override=None):
     for i, ticker in enumerate(tickers_to_scan):
         try:
             # 1. Fetch ALL Kalshi Markets first
-            real_markets, fetch_method = get_real_kalshi_markets(ticker)
+            real_markets, fetch_method, debug_info = get_real_kalshi_markets(ticker)
             
-            # Store fetch method for Dev Tools
-            if 'fetch_methods' not in st.session_state:
-                st.session_state.fetch_methods = {}
-            st.session_state.fetch_methods[ticker] = fetch_method
+            # Store fetch info for Dev Tools
+            if 'fetch_debug' not in st.session_state:
+                st.session_state.fetch_debug = {}
+            st.session_state.fetch_debug[ticker] = {
+                'method': fetch_method, 
+                'info': debug_info,
+                'raw_count': debug_info.get('targeted_count', 0) or debug_info.get('fallback_count', 0)
+            }
             
             buckets = categorize_markets(real_markets, ticker)
             
@@ -342,12 +346,15 @@ def run_scanner(timeframe_override=None):
                     strike = m.get('strike_price')
                     if not strike: continue
                     
-                    # Moneyness Filter: Check if strike is within 2% of current price
-                    # Avoid "Junk Trades" that are deep OTM/ITM
-                    # if curr_price_hourly > 0:
-                    #     pct_diff = abs(strike - curr_price_hourly) / curr_price_hourly
-                    #     if pct_diff > 0.02:
-                    #         continue # Skip if > 2% away
+                    # Moneyness Filter (Configurable)
+                    min_edge_val = st.session_state.get('filter_min_edge', 1.0)
+                    moneyness_pct = st.session_state.get('filter_moneyness', 2.0) / 100.0
+
+                    if curr_price_hourly > 0:
+                        pct_diff = abs(strike - curr_price_hourly) / curr_price_hourly
+                        # Only apply filter if enabled (using > 0 checks logic)
+                        if pct_diff > moneyness_pct:
+                           continue # Skip if too far away
                     
                     market_type = m.get('market_type', 'above')
                     
@@ -393,7 +400,16 @@ def run_scanner(timeframe_override=None):
                     # Calculate Edge
                     # Cost to Enter = ASK Price (You Buy at Ask)
                     cost = s['Real_Yes_Ask'] if "BUY YES" in action else s['Real_No_Ask']
+                    
+                    # Cost is in cents (0-100). Conf is 0-100.
+                    # Safety check
+                    if cost <= 0: cost = 99 # Default conservatively if no ask
+                    
                     s['Real_Edge'] = conf - cost
+                    
+                    # Filter by Edge
+                    if s['Real_Edge'] < min_edge_val:
+                        continue
                     
                     all_strikes.append(s)
 
@@ -609,40 +625,27 @@ internal_timeframe = timeframe_map.get(recommended_tf, "Daily")
 # Sidebar: Keep only essential controls
 st.sidebar.markdown("### 🔌 System Status")
 
-# Check Kalshi Connection (Real Check)
-if check_kalshi_connection():
-    api_status = "✅ Kalshi Live"
-else:
-    api_status = "❌ Error"
+# Detailed Status Panel
+with st.sidebar.expander("System Health", expanded=True):
+    # Check Kalshi
+    k_status = "✅ Live" if check_kalshi_connection() else "❌ Error"
+    st.write(f"**Kalshi API:** {k_status}")
     
-st.sidebar.caption(f"API Status: **{api_status}**")
+    # Check selected ticker stats
+    sel = st.session_state.get('selected_asset', 'SPX')
+    st.write(f"**Target:** {sel}")
+    
+    debug_data = st.session_state.get('fetch_debug', {}).get(sel, {})
+    if debug_data:
+        st.write(f"**Method:** {debug_data.get('method', 'N/A')}")
+        st.write(f"**Fetched:** {debug_data.get('raw_count', 0)} mkts")
+        
+    st.write(f"**Last Scan:** {st.session_state.last_scan_time.strftime('%H:%M:%S') if st.session_state.last_scan_time else 'Never'}")
 
-# Show counts of opportunities per bucket for the currently selected asset
-selected_asset_sidebar = st.session_state.get('selected_asset', 'SPX')
-scan = st.session_state.get('scan_results', {'strikes': [], 'ranges': []})
-strikes_list = scan.get('strikes', [])
-ranges_list = scan.get('ranges', [])
-cnt_hourly = 0
-cnt_daily = 0
-cnt_range = 0
-for s in strikes_list:
-    try:
-        if s.get('Asset') == selected_asset_sidebar:
-            tf = s.get('Timeframe', '')
-            if tf and tf.lower().startswith('hour'):
-                cnt_hourly += 1
-            elif tf and ('daily' in tf.lower() or 'end' in tf.lower()):
-                cnt_daily += 1
-    except Exception:
-        continue
-for r in ranges_list:
-    try:
-        if r.get('Asset') == selected_asset_sidebar:
-            cnt_range += 1
-    except Exception:
-        continue
-
-st.sidebar.caption(f"Opportunities for {selected_asset_sidebar}: ⚡{cnt_hourly}  📅{cnt_daily}  🎯{cnt_range}")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎚️ Filters")
+st.session_state.filter_min_edge = st.sidebar.slider("Min Edge (%)", 0.0, 20.0, 1.0, 0.5)
+st.session_state.filter_moneyness = st.sidebar.slider("Moneyness Limit (%)", 0.5, 10.0, 2.0, 0.5, help="Only show strikes within X% of current price")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💰 PnL Calculator")
@@ -721,18 +724,20 @@ with st.sidebar.expander("🔧 Dev Tools"):
     
     st.markdown("---")
     
-    st.caption(f"Server Time (UTC): {datetime.now(timezone.utc)} | Filters: UTC Fixed, Limit 1000")
+    st.caption(f"Server Time (UTC): {datetime.now(timezone.utc)}")
     
-    for ticker in ["SPX", "Nasdaq", "BTC", "ETH"]:
-        # Use the stored fetch method if available
-        method = st.session_state.get('fetch_methods', {}).get(ticker, "Unknown")
-        markets, _ = get_real_kalshi_markets(ticker) # Re-fetch for debug view or just use what we have? 
-        # Actually, let's just show the stored method and count.
+    sel = st.session_state.get('selected_asset', 'SPX')
+    debug_data = st.session_state.get('fetch_debug', {}).get(sel, {})
+    
+    st.write(f"**Debug Info for {sel}:**")
+    if debug_data:
+        st.json(debug_data.get('info', {}))
+    else:
+        st.write("No debug data available.")
         
-        st.markdown(f"**{ticker}:** {len(markets)} markets | Method: `{method}`")
-        if markets:
-            for m in markets[:2]:
-                st.caption(f"Strike: {m.get('strike_price')} | Yes: {m.get('yes_bid')}¢ | Exp: {m.get('expiration')}")
+    markets, _, _ = get_real_kalshi_markets(sel)
+    if markets:
+        st.write(f"Sample Market 1: {markets[0]}")
 
 st.markdown("---")
 

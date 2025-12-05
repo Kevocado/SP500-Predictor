@@ -35,17 +35,24 @@ def get_real_kalshi_markets(ticker):
         print(f"⚠️ No Kalshi series mapping for {ticker}")
         return [], "Error: No Mapping"
 
-    headers = {}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
+    # Debug Info Dictionary
+    debug_info = {
+        "step": "Init",
+        "targeted_attempted": False,
+        "targeted_count": 0,
+        "fallback_attempted": False,
+        "fallback_count": 0,
+        "error": None
+    }
 
     # --- STEP A: Targeted Fetch (Precise) ---
     try:
+        debug_info["targeted_attempted"] = True
         print(f"🔍 [Step A] Targeted Fetch for {ticker} (Series: {series_ticker})...")
         params_targeted = {
             "series_ticker": series_ticker,
             "status": "open",
-            "limit": 1000
+            "limit": 1000 # Max limit usually 1000
         }
         
         response = requests.get(
@@ -58,19 +65,29 @@ def get_real_kalshi_markets(ticker):
         if response.status_code == 200:
             data = response.json()
             markets = data.get('markets', [])
+            debug_info["targeted_count"] = len(markets)
+            
+            # Cursor pagination (if 'cursor' in data) - strictly loop?
+            # For simplicity, if we get 1000, we probably have enough for "top opportunities", 
+            # but ideally we loop. For now, let's stick to simple 1000.
+            
             if markets:
                 print(f"   ✅ Targeted fetch success: {len(markets)} markets found.")
-                return process_markets(markets, ticker), "Targeted"
+                debug_info["step"] = "Targeted Success"
+                return process_markets(markets, ticker), "Targeted", debug_info
             else:
                 print("   ⚠️ Targeted fetch returned 0 markets. Proceeding to fallback...")
         else:
             print(f"   ❌ Targeted fetch failed: {response.status_code}")
+            debug_info["error"] = f"Targeted HTTP {response.status_code}"
 
     except Exception as e:
         print(f"   ❌ Targeted fetch error: {e}")
+        debug_info["error"] = f"Targeted Exception {str(e)}"
 
     # --- STEP B: Fallback Fetch (Broad) ---
     try:
+        debug_info["fallback_attempted"] = True
         print(f"🔍 [Step B] Fallback Fetch (Broad Search) for {ticker}...")
         params_fallback = {
             "limit": 1000,
@@ -87,6 +104,7 @@ def get_real_kalshi_markets(ticker):
         if fb_response.status_code == 200:
             fb_data = fb_response.json()
             all_markets = fb_data.get('markets', [])
+            debug_info["fallback_raw_count"] = len(all_markets)
             print(f"   Broad fetch got {len(all_markets)} total markets. Filtering client-side...")
             
             # Client-Side Filter: Keep if ticker symbol is in the market ticker string
@@ -97,19 +115,25 @@ def get_real_kalshi_markets(ticker):
                 if series_ticker in m_ticker or ticker in m_ticker:
                     filtered_markets.append(m)
             
+            debug_info["fallback_count"] = len(filtered_markets)
+            
             if filtered_markets:
                 print(f"   ✅ Fallback success: {len(filtered_markets)} markets matched.")
-                return process_markets(filtered_markets, ticker), "Fallback (Broad)"
+                debug_info["step"] = "Fallback Success"
+                return process_markets(filtered_markets, ticker), "Fallback (Broad)", debug_info
             else:
                 print("   ❌ Fallback found 0 matching markets.")
-                return [], "Failed (0 Found)"
+                debug_info["step"] = "Fallback Zero"
+                return [], "Failed (0 Found)", debug_info
         else:
             print(f"   ❌ Fallback fetch failed: {fb_response.status_code}")
-            return [], "Failed (API Error)"
+            debug_info["error"] = f"Fallback HTTP {fb_response.status_code}"
+            return [], "Failed (API Error)", debug_info
 
     except Exception as e:
         print(f"   ❌ Fallback fetch error: {e}")
-        return [], "Failed (Exception)"
+        debug_info["error"] = f"Fallback Exception {str(e)}"
+        return [], "Failed (Exception)", debug_info
 
 def process_markets(markets, ticker):
     """Helper to process raw market data into our format."""
