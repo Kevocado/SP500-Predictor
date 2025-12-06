@@ -38,31 +38,17 @@ else:
             print(f"Sample: {found[0]['ticker']} | Status: {found[0]['status']}")
     else:
         print(f"Error checking KXINX: {resp.status_code}")
-    print("\n--- Raw Market Analysis ---")
-    import requests
-    url = "https://api.elections.kalshi.com/trade-api/v2/markets"
-    # Fetch 500 markets
-    resp = requests.get(url, params={"limit": 500, "status": "open"})
-    if resp.status_code == 200:
-        raw = resp.json().get('markets', [])
-        print(f"Fetched {len(raw)} raw markets.")
-        
-        print("\nSearching for 'S&P', '500', 'Nasdaq' in TITLES:")
-        matches = []
-        for m in raw:
-            title = m.get('title', '').lower()
-            if 's&p' in title or '500' in title or 'nasdaq' in title:
-                matches.append(f"{m.get('ticker')} | {m.get('title')}")
-        
-        for m in matches[:10]:
-            print(m)
-            
-        if not matches:
-            print("No S&P/Nasdaq matches found in top 500.")
+    print("\n--- Checking SPX (KXINX) ---")
+    markets, method, debug_info = get_real_kalshi_markets("SPX")
+    print(f"SPX Markets: {len(markets)} | Method: {method}")
+    if markets:
+        print(f"Sample: {markets[0]['market_id']} | Exp: {markets[0]['expiration']}")
+    else:
+        print("Debug Info:")
+        print(debug_info)
 
-print("\n--- Checking BTC ---")
-# Check if BTC works
-markets_btc, _, _ = get_real_kalshi_markets("BTC")
-print(f"BTC Markets Found: {len(markets_btc)}")
-if markets_btc:
-    print(markets_btc[0]['market_id'])
+    print("\n--- Checking BTC (KXBTC) ---")
+    markets_btc, _, _ = get_real_kalshi_markets("BTC")
+    print(f"BTC Markets Found: {len(markets_btc)}")
+    if markets_btc:
+        print(f"Sample: {markets_btc[0]['market_id']} | Exp: {markets_btc[0]['expiration']}")

@@ -230,19 +230,22 @@ def categorize_markets(markets, ticker):
             time_diff_hours = time_diff_min / 60.0
             time_diff_days = time_diff_hours / 24.0
 
-            # Hourly: expires within 180 minutes (3 hours) AND (for crypto) inside allowed NY hours
-            if 0 < time_diff_min <= 180:
+            # Hourly: expires within 720 minutes (12 hours) - Widened window
+            # AND (for crypto) inside allowed NY hours if desired, or loosen it.
+            if 0 < time_diff_min <= 720:
                 if is_crypto:
-                    # Crypto active window: 09:00 - 23:59 NY time
-                    if 9 <= now_ny.hour <= 23:
-                        buckets['hourly'].append(m)
+                    # Crypto active window: 09:00 - 23:59 NY time. 
+                    # Consider removing this check if users want 24/7 crypto. 
+                    # For now, keep it but maybe widen or allow "close enough"
+                    if 0 <= now_ny.hour <= 23: # Allow all day for now as markets might be weird
+                         buckets['hourly'].append(m)
                 else:
                     buckets['hourly'].append(m)
                 continue
 
-            # Daily: expires within 14 days (more flexible to show available markets)
-            # Extended to 14 days to catch markets that expire a week+ out
-            if 0 < time_diff_days <= 14:
+            # Daily: expires within 30 days (more flexible to show available markets)
+            # Extended to 30 days based on user feedback
+            if 0 < time_diff_days <= 30:
                 buckets['daily'].append(m)
                 continue
 
@@ -560,7 +563,23 @@ def run_scanner(timeframe_override=None):
                     continue
 
         except Exception as e:
-            print(f"Scanner error on {ticker}: {e}")
+            import traceback
+            error_details = {
+                'ticker': ticker,
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'traceback': traceback.format_exc()
+            }
+            print(f"❌ Scanner error on {ticker}:")
+            # print(error_details['traceback']) # Log to console
+            
+            # Store for Dev Tools
+            if 'fetch_errors' not in st.session_state:
+                st.session_state.fetch_errors = {}
+            st.session_state.fetch_errors[ticker] = error_details
+            
+            # Show in System Health (short version)
+            # st.sidebar.error(f"{ticker}: {str(e)[:50]}...")
         
         progress_bar.progress((i + 1) / len(tickers_to_scan))
         
@@ -691,11 +710,20 @@ st.sidebar.markdown("---")
 with st.sidebar.expander("🔧 Dev Tools"):
     st.caption("Kalshi API Debug Information")
     
-    # Test one ticker in detail
-    st.markdown("**Quick Test: BTC**")
+    # Test selected ticker
+    sel_test = st.session_state.get('selected_asset', 'SPX')
+    st.markdown(f"**Quick Test: {sel_test}**")
     try:
         import requests
-        params = {"limit": 10, "status": "open"}
+        # Use simple fetch first to see raw response
+        # Using the same mapping logic as the main feed for consistency would be better, 
+        # but the user asked for a "raw" check. Let's just use the generic endpoint but try to filter by the likely series if known, 
+        # OR just generic. User asked for "Quick Test: {sel}"
+        # Let's map it roughly to be useful
+        t_map = {"SPX": "INXD", "Nasdaq": "NASD", "BTC": "BTCD", "ETH": "ETHD"}
+        series = t_map.get(sel_test, "INXD")
+        
+        params = {"limit": 10, "status": "open", "series_ticker": series, "with_nested_markets": True}
         headers = {}
         api_key = os.getenv("KALSHI_API_KEY")
         
@@ -790,12 +818,15 @@ with tab_hourly:
         sel = st.session_state.get('selected_asset', 'SPX')
         debug_data = st.session_state.get('fetch_debug', {}).get(sel, {})
         method = debug_data.get('method', '')
+        raw_count = debug_data.get('raw_count', 0)
         
-        if "Empty" in method or "0" in method:
-            st.info(f"ℹ️ No open markets found for {sel}. Markets might be closed (e.g. after 4:15 PM ET) or no short-term contracts available.")
-            st.caption("System Health: Fetched 0 markets. Check Dev Tools for details.")
+        if raw_count == 0:
+             st.error(f"❌ No markets fetched from Kalshi for {sel}. Check Dev Tools for API error.")
+        elif raw_count > 0:
+             st.warning(f"⚠️ Fetched {raw_count} raw markets, but 0 passed filters. Categorization window (12h) might be too narrow or markets are long-dated.")
+             st.caption("Check Dev Tools -> Quick Test to see expiration dates of fetched markets.")
         else:
-            st.info("No opportunities found matching your filters. Try adjusting 'Min Edge' or 'Moneyness'.")
+             st.info("No opportunities found matching your filters. Try adjusting 'Min Edge' or 'Moneyness'.")
     
     if hourly_ops:
         # Sort by Edge (Confidence)

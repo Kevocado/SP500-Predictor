@@ -23,6 +23,7 @@ def get_real_kalshi_markets(ticker):
         print("ℹ️ KALSHI_API_KEY not found. Attempting public data fetch...")
     
     # Map our tickers to Kalshi's actual series tickers
+    # Verifiction: KXBTC returned 80 markets, BTCD returned 0. Sticking to KX series.
     ticker_map = {
         "BTC": "KXBTC",           # Bitcoin
         "ETH": "KXETH",           # Ethereum
@@ -32,8 +33,8 @@ def get_real_kalshi_markets(ticker):
     
     series_ticker = ticker_map.get(ticker)
     if not series_ticker:
-        print(f"⚠️ No Kalshi series mapping for {ticker}")
-        return [], "Error: No Mapping"
+        # Fallback for unforeseen tickers
+        series_ticker = ticker 
 
     # Debug Info Dictionary
     debug_info = {
@@ -56,7 +57,8 @@ def get_real_kalshi_markets(ticker):
         params_targeted = {
             "series_ticker": series_ticker,
             "status": "open",
-            "limit": 1000 # Max limit usually 1000
+            "limit": 100, # Increased limit
+            "with_nested_markets": True # Crucial for finding specific strikes nested under series
         }
         
         response = requests.get(
