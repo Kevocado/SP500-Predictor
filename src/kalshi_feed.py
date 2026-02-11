@@ -1,155 +1,283 @@
+"""
+Kalshi Market Feed — Category-First Fetcher
+Strategy: Fetch events (have categories) → then fetch markets per event_ticker.
+This bypasses the 15k sports parlay flood in the raw /markets endpoint.
+"""
+
 import requests
 import os
+import time
 from dotenv import load_dotenv
 import pandas as pd
 from datetime import datetime
-
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Load .env from root directory
 root_dir = Path(__file__).parent.parent
 env_path = root_dir / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
-KALSHI_API_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
+KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_API_URL = f"{KALSHI_BASE_URL}/markets"
+KALSHI_EVENTS_URL = f"{KALSHI_BASE_URL}/events"
 API_KEY = os.getenv("KALSHI_API_KEY")
+
+# Categories we care about (skip Sports, Entertainment, Social, Mentions)
+TARGET_CATEGORIES = {
+    'Climate and Weather',    # → Weather
+    'Economics',              # → Economics
+    'Financials',             # → Financials
+    'Politics',               # → Politics
+    'Elections',              # → Politics
+    'Companies',              # → Companies
+    'Science and Technology', # → Science
+    'Health',                 # → Health
+    'World',                  # → World
+    'Transportation',         # → World
+    'Crypto',                 # → Financials
+}
+
+# How to normalize/display categories
+CATEGORY_NORMALIZE = {
+    'Climate and Weather': 'Weather',
+    'Science and Technology': 'Science',
+    'Elections': 'Politics',
+    'Transportation': 'World',
+    'Crypto': 'Financials',
+}
+
+
+# ─── HEADERS HELPER ──────────────────────────────────────────────────
+def _headers():
+    h = {}
+    if API_KEY:
+        h["Authorization"] = f"Bearer {API_KEY}"
+    return h
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CATEGORY-FIRST FETCH — Used by HybridScanner
+# ═══════════════════════════════════════════════════════════════════════
+
+def _fetch_all_events(max_pages=15):
+    """Paginates through ALL open events."""
+    headers = _headers()
+    all_events = []
+    cursor = None
+
+    for page in range(max_pages):
+        params = {"limit": 200, "status": "open"}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            r = requests.get(KALSHI_EVENTS_URL, params=params, headers=headers, timeout=10)
+            if r.status_code != 200:
+                break
+            data = r.json()
+            batch = data.get('events', [])
+            if not batch:
+                break
+            all_events.extend(batch)
+            cursor = data.get('cursor')
+            if not cursor:
+                break
+            time.sleep(0.1)
+        except Exception as e:
+            print(f"   ❌ Events fetch error: {e}")
+            break
+
+    return all_events
+
+
+def _fetch_markets_for_event(event_ticker, headers):
+    """Fetches all markets for a specific event_ticker."""
+    try:
+        r = requests.get(
+            KALSHI_API_URL,
+            params={"event_ticker": event_ticker, "status": "open", "limit": 200},
+            headers=headers,
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json().get('markets', [])
+    except:
+        pass
+    return []
+
+
+def get_all_active_markets(limit_pages=10):
+    """
+    Category-first fetch strategy:
+      1. Fetch all events (have real categories)
+      2. Filter to non-Sports categories we care about
+      3. Fetch markets per event_ticker using threading
+      4. Clean and return with proper categories
+    """
+    headers = _headers()
+
+    # ── PASS 1: Get all events ──
+    print("📋 Pass 1: Scanning event catalog...")
+    all_events = _fetch_all_events()
+
+    # Filter to target categories
+    target_events = []
+    cat_counts = {}
+    for e in all_events:
+        raw_cat = e.get('category', 'Other')
+        if raw_cat in TARGET_CATEGORIES:
+            norm_cat = CATEGORY_NORMALIZE.get(raw_cat, raw_cat)
+            target_events.append({
+                'event_ticker': e.get('event_ticker', ''),
+                'category': norm_cat,
+                'title': e.get('title', '')
+            })
+            cat_counts[norm_cat] = cat_counts.get(norm_cat, 0) + 1
+
+    print(f"   ✅ Found {len(target_events)} relevant events from {len(all_events)} total")
+    for cat, cnt in sorted(cat_counts.items(), key=lambda x: -x[1]):
+        print(f"      {cat}: {cnt}")
+
+    # ── PASS 2: Fetch markets per event (threaded) ──
+    print(f"\n📡 Pass 2: Fetching markets for {len(target_events)} events...")
+
+    all_raw_markets = []
+    event_cat_map = {}
+
+    # Build event_ticker → category map
+    for ev in target_events:
+        event_cat_map[ev['event_ticker']] = ev['category']
+
+    # Thread the market fetches for speed
+    fetched_count = 0
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = {}
+        for ev in target_events:
+            f = executor.submit(_fetch_markets_for_event, ev['event_ticker'], headers)
+            futures[f] = ev
+
+        for future in as_completed(futures):
+            ev = futures[future]
+            try:
+                markets = future.result()
+                for m in markets:
+                    m['_category'] = ev['category']  # Inject category
+                all_raw_markets.extend(markets)
+                fetched_count += 1
+                if fetched_count % 50 == 0:
+                    print(f"   📡 Fetched markets for {fetched_count}/{len(target_events)} events...")
+            except:
+                pass
+
+    print(f"   ✅ Got {len(all_raw_markets)} markets from {fetched_count} events")
+
+    # ── CLEAN ──
+    return clean_market_data(all_raw_markets, event_cat_map)
+
+
+def clean_market_data(raw_markets, event_cat_map=None):
+    """Cleans markets with categories from the event lookup."""
+    cleaned = []
+
+    for m in raw_markets:
+        # Liquidity Check
+        yes_ask = m.get('yes_ask', 0)
+        if yes_ask == 0:
+            continue
+
+        # Get category (injected or from map)
+        category = m.get('_category')
+        if not category and event_cat_map:
+            category = event_cat_map.get(m.get('event_ticker', ''), 'Other')
+        if not category:
+            category = 'Other'
+
+        # Clean title
+        display_title = m.get('subtitle') or m.get('title', 'Unknown')
+        if len(display_title) > 100:
+            display_title = display_title[:97] + '...'
+
+        cleaned.append({
+            'ticker': m.get('ticker'),
+            'title': display_title,
+            'category': category,
+            'event_ticker': m.get('event_ticker', ''),
+            'price': yes_ask,
+            'no_price': m.get('no_ask', 0),
+            'volume': m.get('volume', 0),
+            'expiration': m.get('expiration_time'),
+            'spread': abs(yes_ask - m.get('yes_bid', 0)),
+            'liquidity': m.get('liquidity', 0),
+            'raw': m
+        })
+
+    # Sort by Volume
+    cleaned.sort(key=lambda x: x['volume'], reverse=True)
+    return cleaned
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# TARGETED FETCH — Used by AI Predictor tab for specific tickers
+# ═══════════════════════════════════════════════════════════════════════
 
 def get_real_kalshi_markets(ticker):
     """
-    Fetches active markets from Kalshi for the given ticker.
-    Returns a tuple: (list of market dicts, fetch_method_string)
+    Fetches active markets from Kalshi for a specific financial ticker.
+    Returns a tuple: (list of market dicts, fetch_method_string, debug_info)
     """
-    if not API_KEY:
-        print("ℹ️ KALSHI_API_KEY not found. Attempting public data fetch...")
-    
-    # Map our tickers to Kalshi's actual series tickers
-    # Verifiction: KXBTC returned 80 markets, BTCD returned 0. Sticking to KX series.
     ticker_map = {
-        "BTC": "KXBTC",           # Bitcoin
-        "ETH": "KXETH",           # Ethereum
-        "SPX": "KXINX",           # S&P 500
-        "Nasdaq": "KXNASDAQ100"   # Nasdaq-100
+        "BTC": "KXBTC",
+        "ETH": "KXETH",
+        "SPX": "KXINX",
+        "Nasdaq": "KXNASDAQ100"
     }
-    
-    series_ticker = ticker_map.get(ticker)
-    if not series_ticker:
-        # Fallback for unforeseen tickers
-        series_ticker = ticker 
+    series_ticker = ticker_map.get(ticker, ticker)
+    headers = _headers()
+    debug_info = {"step": "Init", "error": None}
 
-    # Debug Info Dictionary
-    debug_info = {
-        "step": "Init",
-        "targeted_attempted": False,
-        "targeted_count": 0,
-        "fallback_attempted": False,
-        "fallback_count": 0,
-        "error": None
-    }
-
-    headers = {}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
-
-    # --- STEP A: Targeted Fetch (Precise) ---
+    # Step A: Targeted Fetch
     try:
-        debug_info["targeted_attempted"] = True
-        print(f"🔍 [Step A] Targeted Fetch for {ticker} (Series: {series_ticker})...")
-        params_targeted = {
+        params = {
             "series_ticker": series_ticker,
             "status": "open",
-            "limit": 100, # Increased limit
-            "with_nested_markets": True # Crucial for finding specific strikes nested under series
+            "limit": 200,
         }
-        
-        response = requests.get(
-            KALSHI_API_URL, 
-            params=params_targeted, 
-            headers=headers if API_KEY else None,
-            timeout=10
-        )
-        
+        response = requests.get(KALSHI_API_URL, params=params, headers=headers, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            markets = data.get('markets', [])
-            debug_info["targeted_count"] = len(markets)
-            
-            # Cursor pagination (if 'cursor' in data) - strictly loop?
-            # For simplicity, if we get 1000, we probably have enough for "top opportunities", 
-            # but ideally we loop. For now, let's stick to simple 1000.
-            
+            markets = response.json().get('markets', [])
             if markets:
-                print(f"   ✅ Targeted fetch success: {len(markets)} markets found.")
                 debug_info["step"] = "Targeted Success"
                 return process_markets(markets, ticker), "Targeted", debug_info
-            else:
-                print("   ⚠️ Targeted fetch returned 0 markets. Proceeding to fallback...")
-        else:
-            print(f"   ❌ Targeted fetch failed: {response.status_code}")
-            debug_info["error"] = f"Targeted HTTP {response.status_code}"
 
     except Exception as e:
-        print(f"   ❌ Targeted fetch error: {e}")
-        debug_info["error"] = f"Targeted Exception {str(e)}"
+        debug_info["error"] = str(e)
 
-    # --- STEP B: Fallback Fetch (Broad) ---
+    # Step B: Fallback Broad Fetch
     try:
-        debug_info["fallback_attempted"] = True
-        print(f"🔍 [Step B] Fallback Fetch (Broad Search) for {ticker}...")
-        params_fallback = {
-            "limit": 1000,
-            "status": "open"
-        }
-        
-        fb_response = requests.get(
-            KALSHI_API_URL, 
-            params=params_fallback, 
-            headers=headers if API_KEY else None,
-            timeout=15
-        )
-        
-        if fb_response.status_code == 200:
-            fb_data = fb_response.json()
-            all_markets = fb_data.get('markets', [])
-            debug_info["fallback_raw_count"] = len(all_markets)
-            print(f"   Broad fetch got {len(all_markets)} total markets. Filtering client-side...")
-            
-            # Client-Side Filter: Keep if ticker symbol is in the market ticker string
-            # e.g. "KXBTC" in "KXBTC-23NOV..." OR "BTC" in "KXBTC..."
-            filtered_markets = []
-            for m in all_markets:
-                m_ticker = m.get('ticker', '')
-                if series_ticker in m_ticker or ticker in m_ticker:
-                    filtered_markets.append(m)
-            
-            debug_info["fallback_count"] = len(filtered_markets)
-            
-            if filtered_markets:
-                print(f"   ✅ Fallback success: {len(filtered_markets)} markets matched.")
+        params = {"limit": 1000, "status": "open"}
+        response = requests.get(KALSHI_API_URL, params=params, headers=headers, timeout=15)
+        if response.status_code == 200:
+            all_m = response.json().get('markets', [])
+            filtered = [m for m in all_m if series_ticker in m.get('ticker', '') or ticker in m.get('ticker', '')]
+            if filtered:
                 debug_info["step"] = "Fallback Success"
-                return process_markets(filtered_markets, ticker), "Fallback (Broad)", debug_info
-            else:
-                print("   ⚠️ Fallback found 0 matching markets.")
-                debug_info["step"] = "Fallback Zero"
-                return [], "Empty (0 Found)", debug_info
-        else:
-            print(f"   ❌ Fallback fetch failed: {fb_response.status_code}")
-            debug_info["error"] = f"Fallback HTTP {fb_response.status_code}"
-            return [], "Failed (API Error)", debug_info
+                return process_markets(filtered, ticker), "Fallback", debug_info
 
     except Exception as e:
-        print(f"   ❌ Fallback fetch error: {e}")
-        debug_info["error"] = f"Fallback Exception {str(e)}"
-        return [], "Failed (Exception)", debug_info
+        debug_info["error"] = str(e)
+
+    debug_info["step"] = "Empty"
+    return [], "Empty", debug_info
+
 
 def process_markets(markets, ticker):
-    """Helper to process raw market data into our format."""
+    """Processes raw market data into structured format for the ML predictor."""
     results = []
     for m in markets:
         floor = m.get('floor_strike')
         cap = m.get('cap_strike')
-        
+
         is_range = (floor is not None and cap is not None)
-        
         if is_range:
             strike_price = None
             market_type = 'range'
@@ -161,7 +289,7 @@ def process_markets(markets, ticker):
             market_type = 'below'
         else:
             continue
-        
+
         results.append({
             'ticker': ticker,
             'strike_price': strike_price,
@@ -180,20 +308,11 @@ def process_markets(markets, ticker):
         })
     return results
 
+
 def check_kalshi_connection():
-    """
-    Checks if the Kalshi API is accessible and the key is valid.
-    Returns True if successful, False otherwise.
-    """
+    """Checks if the Kalshi API is accessible."""
     try:
-        # Try a simple fetch
-        params = {"limit": 1, "status": "open"}
-        # If key is present, use it? The get_real_kalshi_markets logic handles it.
-        # But here we want to test the connection specifically.
-        # Let's use the same URL.
-        response = requests.get(KALSHI_API_URL, params=params)
-        if response.status_code == 200:
-            return True
-        return False
+        response = requests.get(KALSHI_API_URL, params={"limit": 1, "status": "open"}, timeout=5)
+        return response.status_code == 200
     except:
         return False

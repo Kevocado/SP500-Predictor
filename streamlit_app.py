@@ -1,1165 +1,408 @@
+"""
+Kalshi Pro Scanner
+4-tab interface: AI Predictor, Sniper, Weather, Politics & Econ
+"""
+
 import streamlit as st
-from dotenv import load_dotenv
-from pathlib import Path
-import os
-
-# Load environment variables with explicit path and override IMMEDIATELY
-current_dir = Path(__file__).parent
-env_path = current_dir / '.env'
-load_dotenv(dotenv_path=env_path, override=True)
-
 import pandas as pd
-import yfinance as yf
-import plotly.graph_objects as go
-import numpy as np
-from scipy import stats
-import altair as alt
-import sys
-from datetime import timedelta, time, datetime, timezone
-from zoneinfo import ZoneInfo
-
-# Hybrid Loading: .env (Local/Backend) vs st.secrets (Streamlit Cloud)
-# If AZURE_CONNECTION_STRING is missing (e.g., on Cloud where .env is gitignored),
-# try to load it from Streamlit Secrets into os.environ for compatibility.
-if not os.getenv("AZURE_CONNECTION_STRING"):
-    try:
-        if "AZURE_CONNECTION_STRING" in st.secrets:
-            os.environ["AZURE_CONNECTION_STRING"] = st.secrets["AZURE_CONNECTION_STRING"]
-            print("✅ Loaded AZURE_CONNECTION_STRING from st.secrets (Cloud Mode)")
-    except FileNotFoundError:
-        # st.secrets not found (local without .streamlit/secrets.toml)
-        pass
-
-# Debug Status
-if os.getenv("AZURE_CONNECTION_STRING"):
-    print("✅ Azure Connection String is SET.")
-else:
-    print("❌ Azure Connection String is MISSING. Check .env or secrets.toml.")
-
-# Add src to path so we can import modules
-# sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
-from src.data_loader import fetch_data
-from src.feature_engineering import create_features, prepare_training_data
-from src.model import load_model, predict_next_hour, train_model, calculate_probability, get_recent_rmse, FeatureMismatchError
-
-from src.evaluation import evaluate_model
-from src.utils import get_market_status, determine_best_timeframe, categorize_markets
-from src.kalshi_feed import get_real_kalshi_markets, check_kalshi_connection
-from src.model_daily import load_daily_model, predict_daily_close, prepare_daily_data
-from src.signals import generate_trading_signals
-from src.market_scanner import ScannerDashboard
+from datetime import datetime, timezone
+from src.market_scanner import HybridScanner
 from src.sentiment import render_sentiment_panel
 
-# Azure Logger with Safety Wrapper (Only needed for main app if we log predictions here, but for now we keep it if needed or remove if unused. 
-# The prompt said "Move all code related to... Azure Logs". 
-# But we might still need logging for predictions? 
-# The prompt said "Cut all the code related to 'Model Performance', 'Trust Engine', 'Calibration Curve', and 'Azure Logs'".
-# It didn't explicitly say remove logging of NEW predictions. 
-# However, let's keep the import if it's used for logging new predictions, but remove the "Historical Logs" section at the bottom.
-# Actually, looking at the code, `log_prediction` is imported but not used in the visible code? 
-# Ah, `log_prediction` is likely used inside `generate_trading_signals` or similar? No, it's usually called after prediction.
-# Let's check if `log_prediction` is used. It's imported at line 48.
-# Searching the file... it's NOT used in the provided code!
-# So we can remove the import block entirely if we want to be clean, or just leave it.
-# Let's remove the unused imports to be clean, as per "Move all code related to... Azure Logs".
+# ─── PAGE CONFIG ─────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Kalshi Pro Scanner",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Removing unused imports for analytics
+# ─── PREMIUM DARK THEME CSS ─────────────────────────────────────────
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    .stApp { font-family: 'Inter', sans-serif; }
 
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
+        border-right: 1px solid rgba(48, 54, 61, 0.6);
+    }
 
-st.set_page_config(page_title="Prediction Market Edge Finder", layout="wide")
+    /* Metrics */
+    div[data-testid="stMetric"] {
+        background: rgba(22, 27, 34, 0.8);
+        border: 1px solid rgba(48, 54, 61, 0.5);
+        padding: 12px 16px;
+        border-radius: 10px;
+    }
 
-# --- SESSION STATE INITIALIZATION ---
-if 'scan_results' not in st.session_state:
-    st.session_state.scan_results = {'strikes': [], 'ranges': []}
-if 'last_scan_time' not in st.session_state:
-    st.session_state.last_scan_time = None
-if 'selected_asset' not in st.session_state:
-    st.session_state.selected_asset = "SPX"
-if 'wager_amount' not in st.session_state:
-    st.session_state.wager_amount = 100
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: rgba(13, 17, 23, 0.6);
+        border-radius: 12px;
+        padding: 4px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        background: rgba(56, 139, 253, 0.15);
+        border-bottom: 2px solid #388bfd;
+    }
 
-# --- HELPER FUNCTIONS ---
-def create_probability_bar(model_prob, market_prob=50):
-    """
-    Creates a simple horizontal bar chart showing Model Prob vs Market Prob (Breakeven).
-    """
-    # Data for the chart
-    data = pd.DataFrame({
-        'Probability': [model_prob],
-        'Label': ['Model']
-    })
-    
-    # Base chart
-    base = alt.Chart(data).encode(
-        x=alt.X('Probability', scale=alt.Scale(domain=[0, 100]), axis=None),
-        y=alt.Y('Label', axis=None)
-    )
-    
-    # The Bar (Model Probability)
-    # Color logic: Green if > Market, Red if < Market (but usually we show "Confidence" > 50, so mostly Green?)
-    # Actually, let's stick to the "Edge" logic. 
-    # If we are betting YES, and Model > Market, it's Green.
-    # If we are betting NO, and Model < Market, it's Green (for the NO bet).
-    # Let's just make it Blue for "Model Prediction" and use the Card Text color for Sentiment.
-    # Or use the user's request: "Green if Model > Market, Red if Model < Market".
-    
-    # Use accessible colors for Light/Dark mode
-    color = "#22c55e" if model_prob > market_prob else "#ef4444"
-    
-    bar = base.mark_bar(color=color, height=20)
-    
-    # The Rule (Market/Breakeven Probability)
-    # Use a color that stands out in both modes (e.g., Gray or Black/White mix? Or just Orange?)
-    # White is invisible in Light Mode. Black is invisible in Dark Mode.
-    # Let's use a safe Gray or Orange.
-    rule = alt.Chart(pd.DataFrame({'x': [market_prob]})).mark_rule(color='gray', strokeWidth=3).encode(x='x')
-    
-    return (bar + rule).properties(height=30, width='container')
+    /* Hero */
+    .hero-header {
+        background: linear-gradient(135deg, rgba(56, 139, 253, 0.1) 0%, rgba(163, 113, 247, 0.1) 100%);
+        border: 1px solid rgba(56, 139, 253, 0.2);
+        border-radius: 16px;
+        padding: 24px 32px;
+        margin-bottom: 24px;
+    }
+    .hero-header h1 {
+        background: linear-gradient(90deg, #388bfd, #a371f7);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0;
+    }
+    .hero-header p {
+        color: #8b949e;
+        margin: 4px 0 0;
+        font-size: 0.95rem;
+    }
 
-def display_market_context():
-    """
-    Displays macro market context (VIX, Yields, BTC Volume) using yfinance.
-    """
-    try:
-        # Fetch data for VIX, 10Y Yield, and BTC
-        # Use simple Ticker objects for reliability
-        vix = yf.Ticker("^VIX").history(period="1d")
-        tnx = yf.Ticker("^TNX").history(period="1d")
-        btc = yf.Ticker("BTC-USD").history(period="1d")
-        
-        if not vix.empty and not tnx.empty and not btc.empty:
-            # VIX
-            vix_val = vix['Close'].iloc[-1]
-            vix_open = vix['Open'].iloc[-1]
-            vix_delta = vix_val - vix_open
-            
-            # 10Y Yield
-            tnx_val = tnx['Close'].iloc[-1]
-            
-            # BTC Volume
-            btc_vol = btc['Volume'].iloc[-1]
-            btc_vol_b = btc_vol / 1_000_000_000
-            
-            # Regime Logic
-            if vix_val > 20:
-                regime = "HIGH VOLATILITY"
-                regime_icon = "⚠️"
-                is_high_vol = True
-            else:
-                regime = "NORMAL"
-                regime_icon = "✅"
-                is_high_vol = False
-                
-            # Display
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric(
-                "🌪️ VIX", 
-                f"{vix_val:.2f}", 
-                f"{vix_delta:+.2f}", 
-                delta_color="inverse",
-                help="Fear Index: <15 = Calm, 15-20 = Normal, >20 = High Fear. Rising VIX = Market Uncertainty."
-            )
-            m2.metric(
-                "🏦 10Y Yield", 
-                f"{tnx_val:.2f}%",
-                help="Interest Rate Proxy: Rising yields = Expensive borrowing, often bearish for growth stocks. Falling = Cheap money."
-            )
-            m3.metric(
-                "₿ Volume", 
-                f"{btc_vol_b:.1f}B",
-                help="Bitcoin Volume: High volume = Strong crypto activity. Low volume = Sleepy markets, lower conviction."
-            )
-            
-            with m4:
-                if is_high_vol:
-                    st.error(f"{regime_icon} {regime}")
-                else:
-                    st.success(f"{regime_icon} {regime}")
+    /* Alert cards */
+    .arb-alert {
+        background: linear-gradient(135deg, rgba(0, 255, 157, 0.08) 0%, rgba(0, 200, 120, 0.05) 100%);
+        border: 1px solid rgba(0, 255, 157, 0.3);
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-bottom: 8px;
+    }
+    .arb-profit { color: #00ff9d; font-size: 1.8rem; font-weight: 700; }
 
-            
-    except Exception as e:
-        # Fail silently or show small error
-        st.caption(f"Market Context Unavailable: {e}")
+    .yield-card {
+        background: linear-gradient(135deg, rgba(255, 170, 0, 0.06) 0%, rgba(255, 200, 50, 0.03) 100%);
+        border: 1px solid rgba(255, 170, 0, 0.25);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+    }
+    .yield-roi { color: #ffaa00; font-size: 1.4rem; font-weight: 700; }
 
+    .ml-signal {
+        background: linear-gradient(135deg, rgba(56, 139, 253, 0.08) 0%, rgba(100, 160, 255, 0.04) 100%);
+        border: 1px solid rgba(56, 139, 253, 0.3);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+    }
 
+    .stat-pill {
+        display: inline-block;
+        background: rgba(56, 139, 253, 0.12);
+        border: 1px solid rgba(56, 139, 253, 0.3);
+        border-radius: 20px;
+        padding: 4px 12px;
+        font-size: 0.8rem;
+        color: #388bfd;
+        margin-right: 6px;
+    }
+    .stat-pill-green { background: rgba(0,255,157,0.1); border-color: rgba(0,255,157,0.3); color: #00ff9d; }
+    .stat-pill-amber { background: rgba(255,170,0,0.1); border-color: rgba(255,170,0,0.3); color: #ffaa00; }
 
+    .empty-state {
+        text-align: center;
+        padding: 60px 20px;
+        color: #8b949e;
+    }
+    .empty-state h2 { color: #c9d1d9; margin-bottom: 8px; }
 
-def run_scanner(timeframe_override=None):
-    """
-    Runs the market scanner and updates session state.
-    """
-    tickers_to_scan = ["SPX", "Nasdaq", "BTC", "ETH"]
-    all_strikes = []
-    all_ranges = []
-    
-    progress_bar = st.progress(0)
-    
-    for i, ticker in enumerate(tickers_to_scan):
-        try:
-            # 1. Fetch ALL Kalshi Markets first
-            real_markets, fetch_method, debug_info = get_real_kalshi_markets(ticker)
-            
-            # Store fetch info for Dev Tools
-            if 'fetch_debug' not in st.session_state:
-                st.session_state.fetch_debug = {}
-            st.session_state.fetch_debug[ticker] = {
-                'method': fetch_method, 
-                'info': debug_info,
-                'raw_count': debug_info.get('targeted_count', 0) or debug_info.get('fallback_count', 0)
-            }
-            
-            buckets = categorize_markets(real_markets, ticker)
-            
-            # 2. Load Models with Auto-Retrain Logic
-            # Hourly Model
-            df_hourly = fetch_data(ticker=ticker, period="5d", interval="1m")
-            model_hourly, needs_retrain_hourly = load_model(ticker=ticker)
-            
-            # Auto-retrain if needed
-            if needs_retrain_hourly or model_hourly is None:
-                st.warning(f"⚠️ Model structure changed for {ticker}. Retraining hourly model automatically...")
-                try:
-                    print(f"🔄 Auto-retraining hourly model for {ticker}...")
-                    df_train = fetch_data(ticker=ticker, period="7d", interval="1m")
-                    df_train = prepare_training_data(df_train)
-                    model_hourly = train_model(df_train, ticker=ticker)
-                    print(f"✅ Hourly model for {ticker} retrained successfully")
-                except Exception as e:
-                    print(f"❌ Failed to retrain hourly model for {ticker}: {e}")
-                    model_hourly = None
-            
-            # Daily Model
-            df_daily = fetch_data(ticker=ticker, period="60d", interval="1h")
-            model_daily = load_daily_model(ticker=ticker)
-            
-            # Debug: Log bucket contents
-            print(f"\n🔍 Scanner processing {ticker}:")
-            print(f"   Hourly bucket: {len(buckets['hourly'])} markets, Model: {model_hourly is not None}, Data: {len(df_hourly) if not df_hourly.empty else 0} rows")
-            print(f"   Daily bucket: {len(buckets['daily'])} markets, Model: {model_daily is not None}, Data: {len(df_daily) if not df_daily.empty else 0} rows")
-            print(f"   Range bucket: {len(buckets['range'])} markets")
-            
-            # 3. Process Hourly Bucket
-            if not df_hourly.empty and model_hourly and buckets['hourly']:
-                try:
-                    df_features_hourly = create_features(df_hourly)
-                    pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
-                    rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
-                    curr_price_hourly = df_hourly['Close'].iloc[-1]
-                except FeatureMismatchError as e:
-                    # Feature mismatch detected during prediction - retrain
-                    st.warning(f"⚠️ Feature mismatch detected for {ticker}. Retraining model automatically...")
-                    print(f"🔄 Feature mismatch in prediction for {ticker}: {e}")
-                    try:
-                        df_train = fetch_data(ticker=ticker, period="7d", interval="1m")
-                        df_train = prepare_training_data(df_train)
-                        model_hourly = train_model(df_train, ticker=ticker)
-                        print(f"✅ Hourly model for {ticker} retrained successfully")
-                        
-                        # Retry prediction with new model
-                        df_features_hourly = create_features(df_hourly)
-                        pred_hourly = predict_next_hour(model_hourly, df_features_hourly, ticker=ticker)
-                        rmse_hourly = get_recent_rmse(model_hourly, df_hourly, ticker=ticker)
-                        curr_price_hourly = df_hourly['Close'].iloc[-1]
-                    except Exception as retrain_error:
-                        print(f"❌ Failed to retrain and predict for {ticker}: {retrain_error}")
-                        continue  # Skip this ticker
-                
-                
-                # Generate signals for these specific markets
-                # We need to map the markets to the signal format
-                for m in buckets['hourly']:
-                    strike = m.get('strike_price')
-                    if not strike: continue
-                    
-                    # Moneyness Filter (Configurable)
-                    min_edge_val = st.session_state.get('filter_min_edge', 1.0)
-                    moneyness_pct = st.session_state.get('filter_moneyness', 2.0) / 100.0
+    .stProgress > div > div > div > div {
+        background: linear-gradient(90deg, #388bfd, #a371f7);
+    }
+</style>
+""", unsafe_allow_html=True)
 
-                    if curr_price_hourly > 0:
-                        pct_diff = abs(strike - curr_price_hourly) / curr_price_hourly
-                        # Only apply filter if enabled (using > 0 checks logic)
-                        if pct_diff > moneyness_pct:
-                           continue # Skip if too far away
-                    
-                    market_type = m.get('market_type', 'above')
-                    
-                    # Calculate Prob (Model predicts price > strike)
-                    prob_above = calculate_probability(pred_hourly, strike, rmse_hourly)
-                    
-                    # Adjust for Market Type
-                    if market_type == 'below':
-                        strike_label = f"< ${strike}"
-                        prob_win = 100 - prob_above
-                    else:
-                        strike_label = f"> ${strike}"
-                        prob_win = prob_above
-                    
-                    # Determine Action
-                    # If Prob Win > 50 -> Buy YES
-                    # If Prob Win < 50 -> Buy NO
-                    if prob_win > 50:
-                        action = "BUY YES"
-                        conf = prob_win
-                    else:
-                        action = "BUY NO"
-                        conf = 100 - prob_win
-                        
-                    s = {
-                        'Asset': ticker,
-                        'Strike': strike_label,
-                        'Prob': f"{conf:.1f}%",
-                        'Numeric_Prob': conf,
-                        'Action': action,
-                        'Timeframe': "Hourly",
-                        'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
-                        'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p"),
-                        'RMSE': rmse_hourly,
-                        'Real_Yes_Bid': m.get('yes_bid', 0),
-                        'Real_No_Bid': m.get('no_bid', 0),
-                        'Real_Yes_Ask': m.get('yes_ask', 0),
-                        'Real_No_Ask': m.get('no_ask', 0),
-                        'Has_Real_Data': True,
-                        'Market_Type': market_type
-                    }
-                    
-                    # Calculate Edge
-                    # Cost to Enter = ASK Price (You Buy at Ask)
-                    cost = s['Real_Yes_Ask'] if "BUY YES" in action else s['Real_No_Ask']
-                    
-                    # Cost is in cents (0-100). Conf is 0-100.
-                    # Safety check
-                    if cost <= 0: cost = 99 # Default conservatively if no ask
-                    
-                    s['Real_Edge'] = conf - cost
-                    
-                    # Filter by Edge
-                    if s['Real_Edge'] < min_edge_val:
-                        continue
-                    
-                    all_strikes.append(s)
+# ─── SESSION STATE ───────────────────────────────────────────────────
+if 'scanner' not in st.session_state:
+    st.session_state.scanner = HybridScanner()
+if 'data' not in st.session_state:
+    st.session_state.data = None
+if 'scan_time' not in st.session_state:
+    st.session_state.scan_time = None
 
-            # 4. Process Daily Bucket
-            if not df_daily.empty and model_daily and buckets['daily']:
-                df_features_daily, _ = prepare_daily_data(df_daily)
-                pred_daily = predict_daily_close(model_daily, df_features_daily.iloc[[-1]])
-                rmse_daily = df_daily['Close'].iloc[-1] * 0.01
-                
-                for m in buckets['daily']:
-                    strike = m.get('strike_price')
-                    if not strike: continue
-                    
-                    # Moneyness Filter: Check if strike is within 2% of current price
-                    # curr_price_daily = df_daily['Close'].iloc[-1]
-                    # if curr_price_daily > 0:
-                    #     pct_diff = abs(strike - curr_price_daily) / curr_price_daily
-                    #     if pct_diff > 0.02:
-                    #         continue # Skip if > 2% away
+# ─── SIDEBAR ─────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <div style="text-align: center; padding: 16px 0 8px;">
+        <span style="font-size: 2.5rem;">⚡</span>
+        <h2 style="margin: 4px 0 0; background: linear-gradient(90deg, #388bfd, #a371f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Kalshi Pro</h2>
+        <p style="color: #8b949e; font-size: 0.85rem; margin-top: 2px;">Deep Scan (10k Markets) Active</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-                    market_type = m.get('market_type', 'above')
-                    
-                    # Calculate Prob (Model predicts price > strike)
-                    prob_above = calculate_probability(pred_daily, strike, rmse_daily)
-                    
-                    # Adjust for Market Type
-                    if market_type == 'below':
-                        strike_label = f"< ${strike}"
-                        prob_win = 100 - prob_above
-                    else:
-                        strike_label = f"> ${strike}"
-                        prob_win = prob_above
-                    
-                    if prob_win > 50:
-                        action = "BUY YES"
-                        conf = prob_win
-                    else:
-                        action = "BUY NO"
-                        conf = 100 - prob_win
-                        
-                    s = {
-                        'Asset': ticker,
-                        'Strike': strike_label,
-                        'Prob': f"{conf:.1f}%",
-                        'Numeric_Prob': conf,
-                        'Action': action,
-                        'Timeframe': "Daily",
-                        'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
-                        'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p"),
-                        'RMSE': rmse_daily,
-                        'Real_Yes_Bid': m.get('yes_bid', 0),
-                        'Real_No_Bid': m.get('no_bid', 0),
-                        'Real_Yes_Ask': m.get('yes_ask', 0),
-                        'Real_No_Ask': m.get('no_ask', 0),
-                        'Has_Real_Data': True,
-                        'Market_Type': market_type
-                    }
-                    
-                    # CRITICAL FIX: Cost to Enter = ASK Price (You Buy at Ask)
-                    cost = s['Real_Yes_Ask'] if "BUY YES" in action else s['Real_No_Ask']
-                    s['Real_Edge'] = conf - cost
-                    print(f"DEBUG: {ticker} {strike} | Action: {action} | Conf: {conf:.2f} | Cost: {cost} | Edge: {s['Real_Edge']:.2f}")
-                    
-                    all_strikes.append(s)
-            
-            # 5. Process Range Bucket (Advanced)
-            # Filter by Edge > 5% and Proximity +/- 2%
-            for m in buckets['range']:
-                try:
-                    # Determine timeframe and model to use
-                    exp_time = pd.to_datetime(m['expiration'])
-                    if exp_time.tzinfo is None:
-                        exp_time = exp_time.replace(tzinfo=ZoneInfo("UTC"))
-                    
-                    now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
-                    time_diff_min = (exp_time - now_utc).total_seconds() / 60.0
-                    
-                    # Select Model & Data
-                    if time_diff_min <= 180 and model_hourly and not df_hourly.empty:
-                        pred = pred_hourly
-                        rmse = rmse_hourly
-                        curr_price = df_hourly['Close'].iloc[-1]
-                        timeframe = "Hourly"
-                    elif model_daily and not df_daily.empty:
-                        pred = pred_daily
-                        rmse = rmse_daily
-                        curr_price = df_daily['Close'].iloc[-1]
-                        timeframe = "Daily"
-                    else:
-                        continue # No model available
-                        
-                    # Get Range Bounds
-                    lower = m.get('floor_strike')
-                    upper = m.get('cap_strike')
-                    
-                    if lower is None or upper is None:
-                        continue
-                        
-                    # 1. Filter by Proximity (+/- 2%)
-                    mid_point = (lower + upper) / 2
-                    pct_diff = abs(mid_point - curr_price) / curr_price
-                    if pct_diff > 0.02:
-                        continue # Skip if too far from current price
-                        
-                    # 2. Calculate Probability (CDF Logic)
-                    # Prob(Lower < Price < Upper) = Prob(Price > Lower) - Prob(Price > Upper)
-                    prob_lower = calculate_probability(pred, lower, rmse)
-                    prob_upper = calculate_probability(pred, upper, rmse)
-                    prob_in_range = prob_lower - prob_upper
-                    
-                    # Clip to valid range (0-100)
-                    prob_in_range = max(0.0, min(100.0, prob_in_range))
-                    
-                    # 3. Calculate Edge
-                    # Cost is Yes Ask
-                    cost = m.get('yes_ask', 100) # Default to 100 if no ask (avoids showing infinite edge)
-                    if cost == 0: cost = 99 # Avoid zero cost edge cases
-                    
-                    edge = prob_in_range - cost
-                    
-                    # 4. Filter by Edge (> 5%)
-                    if edge < 5:
-                        continue
-                        
-                    # Add to results
-                    r = {
-                        'Asset': ticker,
-                        'Range': f"${lower:,.0f} - ${upper:,.0f}",
-                        'Prob': f"{prob_in_range:.1f}%",
-                        'Numeric_Prob': prob_in_range,
-                        'Cost': cost,
-                        'Edge': edge,
-                        'Action': "BUY YES",
-                        'Timeframe': timeframe,
-                        'Date': pd.to_datetime(m['expiration']).strftime("%b %d"),
-                        'Time': pd.to_datetime(m['expiration']).strftime("%I:%M %p"),
-                        'Real_Yes_Ask': cost,
-                        'Real_Yes_Bid': m.get('yes_bid', 0),
-                        'Real_No_Ask': m.get('no_ask', 0),
-                        'Real_No_Bid': m.get('no_bid', 0),
-                        'Has_Real_Data': True,
-                        'Predicted In Range?': f"{prob_in_range:.1f}%" # Added for display compatibility
-                    }
-                    all_ranges.append(r)
-                    
-                except Exception as e:
-                    # print(f"Error processing range {m.get('ticker')}: {e}")
-                    continue
+    st.markdown("---")
 
-        except Exception as e:
-            import traceback
-            error_details = {
-                'ticker': ticker,
-                'error_type': type(e).__name__,
-                'error_message': str(e),
-                'traceback': traceback.format_exc()
-            }
-            print(f"❌ Scanner error on {ticker}:")
-            # print(error_details['traceback']) # Log to console
-            
-            # Store for Dev Tools
-            if 'fetch_errors' not in st.session_state:
-                st.session_state.fetch_errors = {}
-            st.session_state.fetch_errors[ticker] = error_details
-            
-            # Show in System Health (short version)
-            # st.sidebar.error(f"{ticker}: {str(e)[:50]}...")
-        
-        progress_bar.progress((i + 1) / len(tickers_to_scan))
-        
-    progress_bar.empty()
-    st.session_state.scan_results = {'strikes': all_strikes, 'ranges': all_ranges}
-    st.session_state.last_scan_time = pd.Timestamp.now()
-
-# --- TABBED LAYOUT ---
-st.title("⚡ Prediction Market Edge Finder")
-
-tab_edge, tab_scanner = st.tabs(["📈 Kalshi Edge Finder", "🎯 Market Scanner"])
-
-with tab_edge:
-    # --- AUTO-RUN SCANNER ON LOAD ---
-    if not st.session_state.scan_results['strikes'] and not st.session_state.scan_results['ranges']:
-        run_scanner()
-
-    if st.session_state.last_scan_time:
-        st.caption(f"Last Updated: {st.session_state.last_scan_time.strftime('%H:%M:%S')}")
-
-    # --- LAYOUT ---
-
-    # Refresh button
-    col_spacer, col_refresh = st.columns([3, 1])
-    with col_refresh:
-        if st.button("🔄 Refresh Data", use_container_width=True):
-            run_scanner()
+    if st.button("🔄 RUN DEEP SCAN", type="primary", use_container_width=True):
+        with st.spinner("Fetching 10,000 markets to bypass sports..."):
+            st.session_state.data = st.session_state.scanner.run_scan()
+            st.session_state.scan_time = datetime.now(timezone.utc)
             st.rerun()
 
-    # Market Context Bar
-    display_market_context()
-
-    # Sentiment Panel (collapsible)
-    with st.expander("📊 Market Sentiment", expanded=False):
-        sel_asset = st.session_state.get('selected_asset', 'SPX')
-        render_sentiment_panel(ticker=sel_asset)
-
+    if st.session_state.scan_time:
+        st.caption(f"🕐 Last scan: {st.session_state.scan_time.strftime('%H:%M:%S UTC')}")
+        total = len(st.session_state.scanner.markets)
+        non_sports = len([m for m in st.session_state.scanner.markets if m['category'] != 'Sports'])
+        st.caption(f"📡 {total:,} markets ({non_sports:,} non-sports)")
 
     st.markdown("---")
+    st.info("Scanner filters out Sports by default to find 'Money Markets' (Econ, Politics, Weather).")
 
-    # --- PILLS NAVIGATION (Asset Selector) ---
-    st.markdown("### Select Asset")
-    selected_ticker = st.pills(
-        "Asset Selection",
-        options=["SPX", "Nasdaq", "BTC", "ETH"],
-        default="SPX" if 'selected_asset' not in st.session_state else st.session_state.get('selected_asset', 'SPX'),
-        label_visibility="collapsed",
-        key="asset_pills"
-    )
+    show_sentiment = st.toggle("📊 Show Sentiment", value=True)
 
-    # Update session state
-    if st.session_state.get('last_selected_asset') != selected_ticker:
-        st.session_state.last_selected_asset = selected_ticker
-        st.session_state.selected_asset = selected_ticker
-    
-        # Smart Timeframe Logic
-        recommended_tf = determine_best_timeframe(selected_ticker)
-        reverse_map = {"Hourly": "Hourly", "Daily": "End of Day"}
-        st.session_state.timeframe_view = reverse_map[recommended_tf]
-    
-        if recommended_tf == "Daily" and get_market_status(selected_ticker)['is_open'] == False:
-            st.toast(f"Switched to End of Day view (Market Closed for {selected_ticker})", icon="ℹ️")
+# ─── HERO HEADER ─────────────────────────────────────────────────────
+st.markdown("""
+<div class="hero-header">
+    <h1>⚡ Kalshi Pro Scanner</h1>
+    <p>Deep Scan • AI Predictor • Smart Money • Weather • Yield Farming</p>
+</div>
+""", unsafe_allow_html=True)
 
-    # Determine timeframe (using smart logic, no UI selector needed for now)
-    recommended_tf = determine_best_timeframe(selected_ticker)
-    timeframe_map = {"Hourly": "Hourly", "Daily": "Daily"}
-    internal_timeframe = timeframe_map.get(recommended_tf, "Daily")
+# ─── MAIN CONTENT ────────────────────────────────────────────────────
+if st.session_state.data:
+    data = st.session_state.data
+    scanner = st.session_state.scanner
 
-    # Sidebar: Keep only essential controls
-    st.sidebar.markdown("### 🔌 System Status")
+    # ── Metrics Row ──
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("📡 Markets", f"{len(scanner.markets):,}")
+    c2.metric("🤖 AI Signals", len(data['ml_alpha']))
+    c3.metric("⛈️ Weather", len(data['weather']))
+    c4.metric("🎯 Arbitrage", len(data['arbitrage']),
+              delta="FREE MONEY" if data['arbitrage'] else None,
+              delta_color="normal" if data['arbitrage'] else "off")
+    c5.metric("💰 Yield Farms", len(data['yield_farming']))
 
-    # Detailed Status Panel
-    with st.sidebar.expander("System Health", expanded=True):
-        # Check Kalshi
-        k_status = "✅ Live" if check_kalshi_connection() else "❌ Error"
-        st.write(f"**Kalshi API:** {k_status}")
-    
-        # Check selected ticker stats
-        sel = st.session_state.get('selected_asset', 'SPX')
-        st.write(f"**Target:** {sel}")
-    
-        debug_data = st.session_state.get('fetch_debug', {}).get(sel, {})
-        if debug_data:
-            st.write(f"**Method:** {debug_data.get('method', 'N/A')}")
-            st.write(f"**Fetched:** {debug_data.get('raw_count', 0)} mkts")
-        
-        st.write(f"**Last Scan:** {st.session_state.last_scan_time.strftime('%H:%M:%S') if st.session_state.last_scan_time else 'Never'}")
+    st.markdown("")
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🎚️ Filters")
-    st.session_state.filter_min_edge = st.sidebar.slider("Min Edge (%)", 0.0, 20.0, 1.0, 0.5)
-    st.session_state.filter_moneyness = st.sidebar.slider("Moneyness Limit (%)", 0.5, 10.0, 2.0, 0.5, help="Only show strikes within X% of current price")
+    # ── Category breakdown ──
+    cats = {}
+    for m in scanner.markets:
+        cats[m['category']] = cats.get(m['category'], 0) + 1
+    cat_pills = " ".join([f'<span class="stat-pill">{cat}: {count}</span>' for cat, count in sorted(cats.items(), key=lambda x: -x[1])])
+    st.markdown(f'<div style="margin-bottom: 16px;">{cat_pills}</div>', unsafe_allow_html=True)
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 💰 PnL Calculator")
-    st.session_state.wager_amount = st.sidebar.number_input(
-        "Wager Amount ($)", 
-        min_value=10, 
-        max_value=10000, 
-        value=st.session_state.wager_amount,
-        step=50,
-        help="How much you want to bet per trade"
-    )
+    # ── Tabs ──
+    tab_ml, tab_sniper, tab_weather, tab_macro = st.tabs([
+        "📈 AI Predictor",
+        "💸 Sniper (Easy Money)",
+        "⛈️ Weather",
+        "🏛️ Politics & Econ"
+    ])
 
-    if st.sidebar.button("🔄 Retrain Model"):
-        with st.status(f"Retraining model for {selected_ticker}...", expanded=True) as status:
-            st.write("Fetching data...")
-            try:
-                df = fetch_data(ticker=selected_ticker, period="7d", interval="1m")
-                st.write("Processing features...")
-                df = prepare_training_data(df)
-                st.write("Training model...")
-                train_model(df, ticker=selected_ticker)
-                status.update(label="Model retrained successfully!", state="complete", expanded=False)
-            except Exception as e:
-                st.error(f"Error: {e}")
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 1: AI PREDICTOR — ML Signals
+    # ═══════════════════════════════════════════════════════════════
+    with tab_ml:
+        st.markdown("### 🤖 Machine Learning Signals")
+        st.caption("Predictions based on your trained LightGBM models for SPX, Nasdaq, BTC, ETH.")
 
-    st.sidebar.markdown("---")
+        if data['ml_alpha']:
+            for sig in data['ml_alpha']:
+                st.markdown(f"""
+                <div class="ml-signal">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong style="font-size: 1.05rem; color: #c9d1d9;">{sig['Market']}</strong><br>
+                            <span style="color: #8b949e; font-size: 0.85rem;">
+                                Asset: {sig['Asset']} • Model Prediction: {sig['Model_Pred']:.2f} • Strike: {sig['Strike']:.0f}
+                            </span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="color: #00ff9d; font-size: 1.2rem; font-weight: 700;">{sig['Action']}</span><br>
+                            <span style="color: #8b949e; font-size: 0.8rem;">
+                                Kalshi: {sig['Kalshi_Price']}¢ • Edge: {sig['Edge']} • Conf: {sig['Confidence']}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No strong ML signals found matching current Kalshi markets. This can happen when models aren't trained yet or no markets match the predictions.")
+            st.caption("**Models checked:** SPX, BTC, ETH, Nasdaq — run `python -c 'from src.model import train_model; ...'` to train.")
 
-    with st.sidebar.expander("📘 Help & Strategy"):
-        st.markdown("""
-        **The Strategy**
-        This model predicts the probability of hourly price moves. We buy when Model Confidence > Market Price.
-    
-        **The PnL**
-        Enter your wager size above. The cards calculate your profit if the price hits the strike.
-    
-        **Bid vs Ask**
-        You pay the 'Ask' price to enter a trade. If you want to sell early, you sell at the 'Bid'.
-        """)
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 2: SNIPER — Arbitrage + Yield Farming
+    # ═══════════════════════════════════════════════════════════════
+    with tab_sniper:
+        # ── ARBITRAGE ──
+        st.markdown("### 🎯 Arbitrage Detection")
+        st.caption("Markets where `Cost(YES) + Cost(NO) < $1.00` — guaranteed profit.")
 
-    st.sidebar.markdown("---")
+        if data['arbitrage']:
+            st.error(f"🚨 **{len(data['arbitrage'])} ARBITRAGE OPPORTUNITIES DETECTED**")
+            for arb in data['arbitrage']:
+                st.markdown(f"""
+                <div class="arb-alert">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong style="font-size: 1.05rem; color: #c9d1d9;">{arb['title']}</strong><br>
+                            <span style="color: #8b949e; font-size: 0.85rem;">
+                                Buy YES ({arb['price']}¢) + NO ({arb['no_price']}¢) = {arb['cost']}¢
+                            </span>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="arb-profit">+{arb['profit']}¢</div>
+                            <span style="color: #8b949e; font-size: 0.8rem;">per share guaranteed</span>
+                        </div>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <span class="stat-pill-green">Vol: {arb['volume']:,}</span>
+                        <span class="stat-pill">{arb['category']}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("✅ No arbitrage mispricing detected. Market is efficient right now.")
 
-    # DEBUG TOOLS
-    with st.sidebar.expander("🔧 Dev Tools"):
-        st.caption("Kalshi API Debug Information")
-    
-        # Test selected ticker
-        sel_test = st.session_state.get('selected_asset', 'SPX')
-        st.markdown(f"**Quick Test: {sel_test}**")
-        try:
-            import requests
-            # Use simple fetch first to see raw response
-            # Using the same mapping logic as the main feed for consistency would be better, 
-            # but the user asked for a "raw" check. Let's just use the generic endpoint but try to filter by the likely series if known, 
-            # OR just generic. User asked for "Quick Test: {sel}"
-            # Let's map it roughly to be useful
-            t_map = {"SPX": "INXD", "Nasdaq": "NASD", "BTC": "BTCD", "ETH": "ETHD"}
-            series = t_map.get(sel_test, "INXD")
-        
-            params = {"limit": 10, "status": "open", "series_ticker": series, "with_nested_markets": True}
-            headers = {}
-            api_key = os.getenv("KALSHI_API_KEY")
-        
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-                st.caption("✅ Using API Key")
-            else:
-                st.caption("⚠️ No API Key")
-            
-            url = "https://api.elections.kalshi.com/trade-api/v2/markets"
-            response = requests.get(url, params=params, headers=headers, timeout=10)
-        
-            if response.status_code == 200:
-                data = response.json()
-                markets = data.get('markets', [])
-                st.write(f"**Total Markets:** {len(markets)}")
-            
-                if markets:
-                    st.write("**First 2 markets:**")
-                    for m in markets[:2]:
-                        st.json(m)
-            else:
-                st.error(f"Error: {response.text[:200]}")
-        except Exception as e:
-            st.error(f"Exception: {str(e)}")
-    
         st.markdown("---")
-    
-        st.caption(f"Server Time (UTC): {datetime.now(timezone.utc)}")
-    
-        sel = st.session_state.get('selected_asset', 'SPX')
-        debug_data = st.session_state.get('fetch_debug', {}).get(sel, {})
-    
-        st.write(f"**Debug Info for {sel}:**")
-        if debug_data:
-            st.json(debug_data.get('info', {}))
+
+        # ── YIELD FARMING ──
+        st.markdown("### 💰 Yield Farming (Non-Sports)")
+        st.caption("High probability (>92%) trades expiring in <48h. Economics, Politics, Weather only.")
+
+        if data['yield_farming']:
+            for farm in data['yield_farming']:
+                st.markdown(f"""
+                <div class="yield-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong style="color: #c9d1d9;">{farm['title']}</strong><br>
+                            <span style="color: #8b949e; font-size: 0.85rem;">
+                                {farm['category']} • Vol: {farm['volume']:,}
+                            </span>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="yield-roi">+{farm['roi']:.1f}%</div>
+                            <span style="color: #8b949e; font-size: 0.8rem;">
+                                Cost: {farm['price']}¢ • {farm['hours_left']}h left
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.write("No debug data available.")
-        
-        markets, _, _ = get_real_kalshi_markets(sel)
-        if markets:
-            st.write(f"Sample Market 1: {markets[0]}")
+            st.warning("No yield farms found. Markets may be too far from expiry or no high-probability non-sports bets available.")
 
-    st.markdown("---")
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 3: WEATHER — Climate & Weather Markets
+    # ═══════════════════════════════════════════════════════════════
+    with tab_weather:
+        st.markdown("### ⛈️ Climate & Weather")
+        st.caption("Hurricanes, Temperature, Rain, Snow — bet on the weather.")
 
-    # --- MAIN CONTENT AREA ---
-    all_strikes = st.session_state.scan_results['strikes']
-    all_ranges = st.session_state.scan_results['ranges']
+        if data['weather']:
+            w_search = st.text_input("🔍 Filter Weather (e.g. 'NYC', 'Rain', 'Temperature')", "", key="weather_search")
 
-    # Filter strikes for selected asset
-    asset_strikes_board = [s for s in all_strikes if s['Asset'] == selected_ticker]
-    asset_ranges_board = [r for r in all_ranges if r['Asset'] == selected_ticker]
+            filtered_w = [w for w in data['weather'] if w_search.lower() in w['title'].lower()] if w_search else data['weather']
 
-    # Fetch current price for context
-    try:
-        df_curr = fetch_data(ticker=selected_ticker, period="1d", interval="1m")
-        if not df_curr.empty:
-            curr_alpha = df_curr['Close'].iloc[-1]
-        else:
-            curr_alpha = 0
-    except:
-        curr_alpha = 0
+            st.caption(f"Showing {len(filtered_w)} of {len(data['weather'])} weather markets")
 
-    # Legend Tile
-    with st.container(border=True):
-        l1, l2, l3, l4 = st.columns(4)
-        l1.caption("🟢 BUY / 🔴 SELL")
-        l1.markdown("**Buy at Ask / Sell at Bid**")
-        l2.caption("🎯 ITM (In The Money)")
-        l2.markdown("**Winning (Price > Strike)**")
-        l3.caption("📉 OTM (Out The Money)")
-        l3.markdown("**Chasing (Price < Strike)**")
-        l4.caption("🔥 Edge")
-        l4.markdown("**Model Prob - Market Price**")
-
-    # === MASTER-DETAIL SPLIT LAYOUT ===
-    col_feed, col_analysis = st.columns([1, 2], gap="medium")
-
-    # LEFT COLUMN: Trade Opportunity Board
-    with col_feed:
-        st.markdown("### 📋 Trade Opportunity Board")
-    
-        # Tabs for Sections
-        tab_hourly, tab_daily, tab_ranges = st.tabs(["⚡ Hourly", "📅 End of Day", "🎯 Ranges"])
-
-    with tab_hourly:
-        st.caption("Short-term opportunities expiring in < 3 hours")
-        hourly_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Hourly"]
-    
-        if not hourly_ops:
-            # Check if it's an API empty state or just filtering
-            sel = st.session_state.get('selected_asset', 'SPX')
-            debug_data = st.session_state.get('fetch_debug', {}).get(sel, {})
-            method = debug_data.get('method', '')
-            raw_count = debug_data.get('raw_count', 0)
-        
-            if raw_count == 0:
-                 st.error(f"❌ No markets fetched from Kalshi for {sel}. Check Dev Tools for API error.")
-            elif raw_count > 0:
-                 st.warning(f"⚠️ Fetched {raw_count} raw markets, but 0 passed filters. Categorization window (12h) might be too narrow or markets are long-dated.")
-                 st.caption("Check Dev Tools -> Quick Test to see expiration dates of fetched markets.")
-            else:
-                 st.info("No opportunities found matching your filters. Try adjusting 'Min Edge' or 'Moneyness'.")
-    
-        if hourly_ops:
-            # Sort by Edge (Confidence)
-            hourly_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
-        
-            # Limit to Top 5
-            hourly_ops = hourly_ops[:5]
-        
-            for i, op in enumerate(hourly_ops):
-                # Highlight top 3 Alpha Picks
-                alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
+            for w in filtered_w:
                 with st.container(border=True):
-                    # Deal Ticket Layout: 2 Columns
-                    c1, c2 = st.columns([1.5, 1])
-                
-                    # Logic Prep
-                    prob = op['Numeric_Prob']
-                    if prob > 50:
-                        conf = prob
-                        signal = "BUY YES"
-                        is_buy_yes = True
-                    else:
-                        conf = 100 - prob
-                        signal = "BUY NO"
-                        is_buy_yes = False
-                
-                    # Context Logic
-                    try:
-                        strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                        # Use curr_alpha if available and matching
-                        curr = curr_alpha if op['Asset'] == selected_ticker else 0
-                    
-                        if curr > 0:
-                            # OTM/ITM Logic
-                            # Buy NO: Want Price < Strike. 
-                            # If Price < Strike -> OTM (Safe/Winning).
-                            # If Price > Strike -> ITM (Risk/Losing).
-                            # Buy YES: Want Price > Strike.
-                            # If Price > Strike -> ITM (Winning).
-                            # If Price < Strike -> OTM (Losing).
-                        
-                            if not is_buy_yes: # BUY NO
-                                if curr < strike_val:
-                                    badge_text = "📉 OTM"
-                                    badge_color = "green"
-                                else:
-                                    badge_text = "⚠️ ITM (Risk)"
-                                    badge_color = "red"
-                            else: # BUY YES
-                                if curr > strike_val:
-                                    badge_text = "🎯 ITM (Winning)"
-                                    badge_color = "green"
-                                else:
-                                    badge_text = "📉 OTM (Losing)"
-                                    badge_color = "red"
-                                
-                            context_line = f"Current: ${curr:,.0f}"
-                        else:
-                            badge_text = "Waiting for Data"
-                            badge_color = "gray"
-                            context_line = "Current: N/A"
-                    except:
-                        badge_text = "N/A"
-                        badge_color = "gray"
-                        context_line = "Current: N/A"
-
+                    c1, c2, c3 = st.columns([4, 1, 1])
                     with c1:
-                        # Header: Signal
-                        st.markdown(f"### :green[{signal}] {alpha_badge}")
-                        # Sub-header: Strike
-                        st.markdown(f"**{op['Strike']}**")
-                        # Badge
-                        st.caption(f":{badge_color}[{badge_text}]")
-                        # Context
-                        st.caption(context_line)
-                        # Time
-                        st.caption(f"Exp: {op['Time']}")
-                
+                        st.markdown(f"**{w['title']}**")
+                        st.caption(f"Expires: {w['expiration'] or 'N/A'}")
                     with c2:
-                        # Financials
-                        # Bid/Ask
-                        if op.get('Has_Real_Data'):
-                            bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
-                            ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
-                        
-                            bid_str = f"{bid_price}¢" if bid_price else "No Bid"
-                            ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Ask"
-                        
-                            price_str = f"Bid: {bid_str} | Ask: {ask_str}"
-                        else:
-                            bid_price = None
-                            ask_price_cents = None
-                            price_str = "Bid: No Bid | Ask: No Ask"
-
-                        st.markdown(f"**{price_str}**")
-                        st.caption("Buy at Ask / Sell at Bid")
-
-                        # PnL Calculator
-                        wager = st.session_state.get('wager_amount', 100)
-                        if ask_price_cents and ask_price_cents > 0:
-                            ask_price = ask_price_cents / 100.0
-                            contracts = wager / ask_price
-                            potential_payout = contracts * 1.00 # Binary options pay $1.00
-                            profit = potential_payout - wager
-                            profit_text = f"+${profit:.2f}"
-                            profit_color = "green"
-                            pnl_help = "If you bet $100 and win, you get your $100 back + this Profit amount. (Payout is always $1.00 per contract)."
-                        else:
-                            profit_text = "—"
-                            profit_color = "grey"
-                            pnl_help = "No liquidity to calculate P&L."
-                    
-                        st.markdown(f"**P&L: :{profit_color}[{profit_text}]**", help=pnl_help)
-                    
-                        # Model Value
-                        model_val = int(conf) # roughly cents
-                        st.caption(f"Model: {model_val}¢")
-                    
-                        # Edge
-                        edge = abs(conf - 50) # Rough edge proxy or use Real Edge
-                        if op.get('Has_Real_Data'):
-                            real_edge = op.get('Real_Edge', 0)
-                            edge_str = f"🔥 +{real_edge:.1f}% Edge"
-                        else:
-                            edge_str = f"⚡ {edge:.1f}% Conf"
-                        
-                        st.markdown(f"**{edge_str}**")
-                    
-                        if st.button("Analyze", key=f"dd_h_{i}_{op['Strike']}"):
-                            st.session_state.selected_trade_index = ('hourly', i, op)
-                            st.rerun()
+                        pct = min(w['price'] / 100, 1.0)
+                        st.progress(pct, text=f"Prob: {w['price']}%")
+                    with c3:
+                        st.metric("Volume", f"{w['volume']:,}")
         else:
-            st.info("No Hourly opportunities found.")
+            st.info("No active weather markets found. These may appear seasonally (hurricane season, extreme weather events).")
 
-    with tab_daily:
-        st.caption("End-of-day predictions (4:00 PM Close)")
-        daily_ops = [s for s in asset_strikes_board if s['Timeframe'] == "Daily" or s['Timeframe'] == "End of Day"]
-    
-        if daily_ops:
-            daily_ops.sort(key=lambda x: x.get('Real_Edge', abs(x['Numeric_Prob'] - 50)), reverse=True)
-        
-            # Limit to Top 5
-            daily_ops = daily_ops[:5]
-        
-            for i, op in enumerate(daily_ops):
-                # Highlight top 3 Alpha Picks
-                alpha_badge = "🏆 Alpha Pick" if i < 3 else ""
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 4: MACRO — Economics & Politics
+    # ═══════════════════════════════════════════════════════════════
+    with tab_macro:
+        st.markdown("### 🏛️ Smart Money (Economics & Politics)")
+        st.caption("Fed Rates, CPI, GDP, Elections — where the smart money plays.")
+
+        if data['smart_money']:
+            # Sub-filter
+            econ_only = [m for m in data['smart_money'] if m['category'] == 'Economics']
+            pol_only = [m for m in data['smart_money'] if m['category'] == 'Politics']
+
+            e1, e2 = st.columns(2)
+            e1.metric("📊 Economics", len(econ_only))
+            e2.metric("🏛️ Politics", len(pol_only))
+
+            for m in data['smart_money']:
                 with st.container(border=True):
-                    # Deal Ticket Layout: 2 Columns
-                    c1, c2 = st.columns([1.5, 1])
-                
-                    # Logic Prep
-                    prob = op['Numeric_Prob']
-                    if prob > 50:
-                        conf = prob
-                        signal = "BUY YES"
-                        is_buy_yes = True
-                    else:
-                        conf = 100 - prob
-                        signal = "BUY NO"
-                        is_buy_yes = False
-                
-                    # Context Logic
-                    try:
-                        strike_val = float(op['Strike'].replace('>','').replace('$','').replace(',','').strip())
-                        curr = curr_alpha if op['Asset'] == selected_ticker else 0
-                    
-                        if curr > 0:
-                            if not is_buy_yes: # BUY NO
-                                if curr < strike_val:
-                                    badge_text = "📉 OTM"
-                                    badge_color = "green"
-                                else:
-                                    badge_text = "⚠️ ITM (Risk)"
-                                    badge_color = "red"
-                            else: # BUY YES
-                                if curr > strike_val:
-                                    badge_text = "🎯 ITM (Winning)"
-                                    badge_color = "green"
-                                else:
-                                    badge_text = "📉 OTM (Losing)"
-                                    badge_color = "red"
-                                
-                            context_line = f"Current: ${curr:,.0f}"
-                        else:
-                            badge_text = "Waiting for Data"
-                            badge_color = "gray"
-                            context_line = "Current: N/A"
-                    except:
-                        badge_text = "N/A"
-                        badge_color = "gray"
-                        context_line = "Current: N/A"
-
+                    c1, c2, c3 = st.columns([4, 1, 1])
                     with c1:
-                        st.markdown(f"### :green[{signal}] {alpha_badge}")
-                        st.markdown(f"**{op['Strike']}**")
-                        st.caption(f":{badge_color}[{badge_text}]")
-                        st.caption(context_line)
-                        st.caption(f"Exp: {op['Time']}")
-                
+                        st.markdown(f"**{m['title']}**")
+                        st.caption(f"{m['category']} • `{m['ticker']}`")
                     with c2:
-                        # Bid/Ask
-                        if op.get('Has_Real_Data'):
-                            bid_price = op.get('Real_Yes_Bid') if is_buy_yes else op.get('Real_No_Bid')
-                            ask_price_cents = op.get('Real_Yes_Ask') if is_buy_yes else op.get('Real_No_Ask')
-                        
-                            bid_str = f"{bid_price}¢" if bid_price else "No Bid"
-                            ask_str = f"{ask_price_cents}¢" if ask_price_cents else "No Ask"
-                        
-                            price_str = f"Bid: {bid_str} | Ask: {ask_str}"
-                        else:
-                            bid_price = None
-                            ask_price_cents = None
-                            price_str = "Bid: No Bid | Ask: No Ask"
-                    
-                        st.markdown(f"**{price_str}**")
-                        st.caption("Buy at Ask / Sell at Bid")
-
-                        # PnL Calculator
-                        wager = st.session_state.get('wager_amount', 100)
-                        if ask_price_cents and ask_price_cents > 0:
-                            ask_price = ask_price_cents / 100.0
-                            contracts = wager / ask_price
-                            potential_payout = contracts * 1.00 # Binary options pay $1.00
-                            profit = potential_payout - wager
-                            profit_text = f"+${profit:.2f}"
-                            profit_color = "green"
-                            pnl_help = "If you bet $100 and win, you get your $100 back + this Profit amount. (Payout is always $1.00 per contract)."
-                        else:
-                            profit_text = "—"
-                            profit_color = "grey"
-                            pnl_help = "No liquidity to calculate P&L."
-                    
-                        st.markdown(f"**P&L: :{profit_color}[{profit_text}]**", help=pnl_help)
-                    
-                        # Model Value
-                        model_val = int(conf)
-                        st.caption(f"Model: {model_val}¢")
-                    
-                        # Edge
-                        edge = abs(conf - 50)
-                        if op.get('Has_Real_Data'):
-                            real_edge = op.get('Real_Edge', 0)
-                            edge_str = f"🔥 +{real_edge:.1f}% Edge"
-                        else:
-                            edge_str = f"⚡ {edge:.1f}% Conf"
-                        
-                        st.markdown(f"**{edge_str}**")
-                    
-                        if st.button("Analyze", key=f"dd_d_{i}_{op['Strike']}"):
-                            st.session_state.selected_trade_index = ('daily', i, op)
-                            st.rerun()
+                        pct = min(m['price'] / 100, 1.0)
+                        st.progress(pct, text=f"Prob: {m['price']}%")
+                    with c3:
+                        st.metric("Volume", f"{m['volume']:,}")
         else:
-            st.info("No Daily opportunities found.")
+            st.info("No active Economics or Politics markets found.")
 
-    with tab_ranges:
-        st.caption("Volatility plays: Will price stay within range?")
-        if asset_ranges_board:
-            for i, r in enumerate(asset_ranges_board):
-                with st.container(border=True):
-                    c1, c2 = st.columns([3, 1])
-                    with c1:
-                        st.markdown(f"### {r['Range']}")
-                        st.write(f"Predicted In Range: **{r.get('Predicted In Range?', 'N/A')}**")
-                    with c2:
-                        st.caption(f"Action: {r['Action']}")
-        else:
-            st.info("No Range opportunities found.")
+    # ── Sentiment Panel ──
+    if show_sentiment:
+        st.markdown("---")
+        with st.expander("📊 Market Sentiment", expanded=False):
+            render_sentiment_panel(ticker="SPX")
 
-    # RIGHT COLUMN: Deep Dive Analysis
-    with col_analysis:
-        st.markdown("### 🔬 Deep Dive Analysis")
-    
-        if 'selected_trade_index' in st.session_state and st.session_state.selected_trade_index:
-            _, _, selected_strike = st.session_state.selected_trade_index
-        
-            # Ensure it matches current asset
-            if selected_strike['Asset'] == selected_ticker:
-                st.markdown(f"**{selected_strike['Action']} at {selected_strike['Strike']}**")
-                st.caption(f"Target: {selected_strike['Date']} at {selected_strike['Time']}")
-            
-                # Fetch fresh data for bell curve
-                try:
-                    if selected_strike['Timeframe'] == "Daily" or selected_strike['Timeframe'] == "End of Day":
-                        df_deep = fetch_data(ticker=selected_ticker, period="60d", interval="1h")
-                        model_deep = load_daily_model(ticker=selected_ticker)
-                        if not df_deep.empty and model_deep:
-                            df_features_deep, _ = prepare_daily_data(df_deep)
-                            pred_deep = predict_daily_close(model_deep, df_features_deep.iloc[[-1]])
-                            rmse_deep = df_deep['Close'].iloc[-1] * 0.01
-                            curr_price_deep = df_deep['Close'].iloc[-1]
-                        else:
-                            raise Exception("No data")
-                    else:
-                        df_deep = fetch_data(ticker=selected_ticker, period="5d", interval="1m")
-                        model_deep = load_model(ticker=selected_ticker)
-                        if not df_deep.empty and model_deep:
-                            df_features_deep = create_features(df_deep)
-                            pred_deep = predict_next_hour(model_deep, df_features_deep, ticker=selected_ticker)
-                            rmse_deep = get_recent_rmse(model_deep, df_deep, ticker=selected_ticker)
-                            curr_price_deep = df_deep['Close'].iloc[-1]
-                        else:
-                            raise Exception("No data")
-                
-                    # Parse strike price
-                    strike_str = str(selected_strike['Strike'])
-                    strike_price = float(strike_str.replace('>', '').replace('<', '').replace('$', '').replace(',', '').strip())
-                
-                    # Calculate probability
-                    prob_val = calculate_probability(pred_deep, strike_price, rmse_deep)
-                
-                    # Create bell curve visualization
-                    st.markdown("#### 📊 Probability Distribution")
-                
-                    # Generate x-axis (price range)
-                    x_min = pred_deep - 4 * rmse_deep
-                    x_max = pred_deep + 4 * rmse_deep
-                    x = np.linspace(x_min, x_max, 500)
-                
-                    # Normal distribution PDF
-                    y = stats.norm.pdf(x, pred_deep, rmse_deep)
-                
-                    # Create Plotly figure
-                    fig = go.Figure()
-                
-                    # Add distribution curve
-                    fig.add_trace(go.Scatter(
-                        x=x, y=y,
-                        mode='lines',
-                        fill='tozeroy',
-                        name='Probability Distribution',
-                        line=dict(color='#3b82f6', width=2)
-                    ))
-                
-                    # Highlight the region based on action
-                    if "BUY YES" in selected_strike['Action']:
-                        mask = x >= strike_price
-                        fig.add_trace(go.Scatter(
-                            x=x[mask], y=y[mask],
-                            mode='lines',
-                            fill='tozeroy',
-                            name=f'Prob Above {strike_str}',
-                            line=dict(color='#22c55e', width=0),
-                            fillcolor='rgba(34, 197, 94, 0.3)'
-                        ))
-                    else:
-                        mask = x <= strike_price
-                        fig.add_trace(go.Scatter(
-                            x=x[mask], y=y[mask],
-                            mode='lines',
-                            fill='tozeroy',
-                            name=f'Prob Below {strike_str}',
-                            line=dict(color='#ef4444', width=0),
-                            fillcolor='rgba(239, 68, 68, 0.3)'
-                        ))
-                
-                    # Add vertical lines
-                    fig.add_vline(x=pred_deep, line_dash="dash", line_color="orange", annotation_text="Predicted", annotation_position="top")
-                    fig.add_vline(x=curr_price_deep, line_dash="dash", line_color="gray", annotation_text="Current", annotation_position="top")
-                    fig.add_vline(x=strike_price, line_color="#ef4444", line_width=3, annotation_text="Strike", annotation_position="top")
-                
-                    fig.update_layout(
-                        title=f"Probability: {selected_strike['Prob']}",
-                        xaxis_title="Price",
-                        yaxis_title="Probability Density",
-                        height=400,
-                        showlegend=True,
-                        hovermode='x unified'
-                    )
-                
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                    # Show key metrics
-                    col_d1, col_d2, col_d3 = st.columns(3)
-                    col_d1.metric("Current", f"${curr_price_deep:,.2f}")
-                    col_d2.metric("Predicted", f"${pred_deep:,.2f}", f"{((pred_deep - curr_price_deep) / curr_price_deep * 100):+.2f}%")
-                    col_d3.metric("Uncertainty", f"${rmse_deep:,.2f}")
-                
-                except Exception as e:
-                    st.error(f"Unable to load analysis: {e}")
-            else:
-                st.info(f"👈 Selected trade is for {selected_strike['Asset']}, but you're viewing {selected_ticker}. Please switch assets or select a different trade.")
-        else:
-            st.info("👈 Select a trade from the board to view deep-dive analysis.")
+# ─── EMPTY STATE ─────────────────────────────────────────────────────
+else:
+    st.markdown("")
+    st.markdown("""
+    <div class="empty-state">
+        <h2>👋 Ready to Deep Scan</h2>
+        <p style="font-size: 1.1rem; margin-bottom: 20px;">
+            Click <strong>🔄 RUN DEEP SCAN</strong> in the sidebar to fetch 10k markets and filter out the noise.
+        </p>
+        <div style="display: flex; justify-content: center; gap: 32px; margin-top: 24px;">
+            <div style="text-align: center;">
+                <span style="font-size: 2rem;">📈</span>
+                <p style="margin-top: 4px;"><strong>AI Predictor</strong></p>
+                <p style="font-size: 0.85rem;">SPX • BTC • ETH • Nasdaq</p>
+            </div>
+            <div style="text-align: center;">
+                <span style="font-size: 2rem;">💸</span>
+                <p style="margin-top: 4px;"><strong>Sniper</strong></p>
+                <p style="font-size: 0.85rem;">Arb • Yield Farming</p>
+            </div>
+            <div style="text-align: center;">
+                <span style="font-size: 2rem;">⛈️</span>
+                <p style="margin-top: 4px;"><strong>Weather</strong></p>
+                <p style="font-size: 0.85rem;">Climate • Temperature</p>
+            </div>
+            <div style="text-align: center;">
+                <span style="font-size: 2rem;">🏛️</span>
+                <p style="margin-top: 4px;"><strong>Politics & Econ</strong></p>
+                <p style="font-size: 0.85rem;">Fed • CPI • Elections</p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.markdown("---")
+    if show_sentiment:
+        st.markdown("---")
+        with st.expander("📊 Market Sentiment", expanded=True):
+            render_sentiment_panel(ticker="SPX")
 
-    # Help section moved to sidebar
-
-    # === TABS REMOVED ===
-    # Analytics moved to pages/1_📈_Performance.py
-
-
-    # --- FOOTER ---
-    st.markdown("---")
-    st.caption("Disclaimer: This tool is for informational purposes only and does not constitute financial advice. Trading involves risk.")
-
-with tab_scanner:
-    scanner_dashboard = ScannerDashboard()
-    scanner_dashboard.render()
-
-    # Sentiment section in scanner tab
-    st.markdown("---")
-    with st.expander("📊 Market Sentiment Overview", expanded=True):
-        render_sentiment_panel(ticker=st.session_state.get('selected_asset', 'SPX'))
-
+# ─── FOOTER ──────────────────────────────────────────────────────────
+st.markdown("---")
+st.caption("⚠️ For informational purposes only. Not financial advice. Trading involves risk.")
