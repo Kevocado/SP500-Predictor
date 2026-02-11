@@ -1,0 +1,60 @@
+# ============================================================
+# SP500 Predictor — Central Configuration
+# ============================================================
+
+# --- Data Sources ---
+data:
+  assets: ["SPX", "Nasdaq", "BTC", "ETH"]
+  yfinance:
+    hourly_period: "5d"
+    hourly_interval: "1m"
+    daily_period: "60d"
+    daily_interval: "1h"
+    training_period: "7d"
+
+# --- Sentiment Analysis ---
+sentiment:
+  enabled: true
+  sources:
+    fear_greed:
+      enabled: true
+      url: "https://api.alternative.me/fng/?limit=30&format=json"
+      weight_crypto: 0.5
+      weight_equity: 0.2
+    vix:
+      enabled: true
+      weight_crypto: 0.2
+      weight_equity: 0.4
+    momentum:
+      enabled: true
+      weight_crypto: 0.3
+      weight_equity: 0.4
+  cache_ttl_minutes: 15
+  display_averages: true
+
+# --- Model Parameters ---
+model:
+  type: "lightgbm"
+  hyperparameters:
+    n_estimators: 200
+    learning_rate: 0.05
+    max_depth: 6
+    subsample: 0.8
+  auto_retrain: true
+  model_dir: "model"
+
+# --- Trading / Scanner ---
+trading:
+  min_edge_pct: 8
+  max_kelly_pct: 6
+  moneyness_filter_pct: 2
+  scan_assets: ["SPX", "Nasdaq", "BTC", "ETH"]
+  bankroll_default: 1000
+
+# --- Dashboard ---
+dashboard:
+  theme: "dark"
+  default_asset: "SPX"
+  default_wager: 100
+  show_sentiment: true
+  sentiment_expanded: false  # collapsed by default in Edge Finder tab
