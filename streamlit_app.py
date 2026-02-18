@@ -1,60 +1,142 @@
 """
-Kalshi Pro Scanner
-4-tab interface: AI Predictor, Sniper, Weather, Politics & Econ
+Kalshi Quant Scanner — v2
+Auto-scans on launch. Per-tab refresh. Direct Kalshi links. Trade reasoning.
 """
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime, timezone
 from src.market_scanner import HybridScanner
-from src.sentiment import render_sentiment_panel
 
-# ─── PAGE CONFIG ─────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Kalshi Pro Scanner",
+    page_title="Kalshi Quant Scanner",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ─── PREMIUM DARK THEME CSS ─────────────────────────────────────────
+# ─── FULL DARK THEME CSS ─────────────────────────────────────────────
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    .stApp { font-family: 'Inter', sans-serif; }
+
+    /* ── Force dark everywhere ── */
+    .stApp {
+        font-family: 'Inter', sans-serif;
+        background-color: #0d1117 !important;
+        color: #e6edf3 !important;
+    }
 
     /* Sidebar */
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
-        border-right: 1px solid rgba(48, 54, 61, 0.6);
+        background: linear-gradient(180deg, #0d1117 0%, #161b22 100%) !important;
+        color: #e6edf3 !important;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #e6edf3 !important;
     }
 
-    /* Metrics */
-    div[data-testid="stMetric"] {
-        background: rgba(22, 27, 34, 0.8);
-        border: 1px solid rgba(48, 54, 61, 0.5);
-        padding: 12px 16px;
-        border-radius: 10px;
+    /* Force white text on all labels, paragraphs, spans */
+    .stApp p, .stApp span, .stApp label, .stApp div,
+    .stMarkdown, .stMarkdown p, .stMarkdown span,
+    [data-testid="stMetricValue"], [data-testid="stMetricLabel"],
+    .stCaption, .stCaption p {
+        color: #e6edf3 !important;
     }
 
-    /* Tabs */
+    /* Metric deltas */
+    [data-testid="stMetricDelta"] {
+        color: #3fb950 !important;
+    }
+
+    /* Tab styling */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: rgba(13, 17, 23, 0.6);
-        border-radius: 12px;
+        background: #161b22;
+        border-radius: 8px;
         padding: 4px;
     }
     .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        padding: 10px 20px;
-        font-weight: 500;
+        color: #8b949e !important;
+        background: transparent;
     }
     .stTabs [aria-selected="true"] {
-        background: rgba(56, 139, 253, 0.15);
-        border-bottom: 2px solid #388bfd;
+        color: #e6edf3 !important;
+        background: #21262d !important;
+        border-radius: 6px;
     }
 
-    /* Hero */
+    /* Expander (backtest panel) */
+    .streamlit-expanderHeader {
+        background: #161b22 !important;
+        color: #e6edf3 !important;
+        border: 1px solid #30363d !important;
+        border-radius: 8px !important;
+    }
+    .streamlit-expanderContent {
+        background: #161b22 !important;
+        color: #e6edf3 !important;
+        border: 1px solid #30363d !important;
+    }
+    details {
+        background: #161b22 !important;
+        border: 1px solid #30363d !important;
+        border-radius: 8px !important;
+    }
+    details summary {
+        color: #e6edf3 !important;
+    }
+    details > div {
+        background: #161b22 !important;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        background: linear-gradient(135deg, #388bfd 0%, #a371f7 100%) !important;
+        color: white !important;
+        border: none !important;
+        font-weight: 600;
+    }
+    .stButton > button:hover {
+        opacity: 0.85;
+    }
+
+    /* Dataframes */
+    .stDataFrame, .stDataFrame div, .stDataFrame th, .stDataFrame td {
+        background-color: #161b22 !important;
+        color: #e6edf3 !important;
+    }
+
+    /* Inputs */
+    .stTextInput input, .stMultiSelect div {
+        background: #21262d !important;
+        color: #e6edf3 !important;
+        border-color: #30363d !important;
+    }
+
+    /* Toggle */
+    .stToggle label span {
+        color: #e6edf3 !important;
+    }
+
+    /* Info/warning boxes */
+    .stAlert {
+        background: #161b22 !important;
+        color: #e6edf3 !important;
+        border-color: #30363d !important;
+    }
+
+    /* Charts */
+    .stLineChart {
+        background: #0d1117 !important;
+    }
+
+    /* Spinner */
+    .stProgress > div > div > div > div {
+        background: linear-gradient(90deg, #388bfd, #a371f7);
+    }
+
+    /* ── Card Styles ── */
     .hero-header {
         background: linear-gradient(135deg, rgba(56, 139, 253, 0.1) 0%, rgba(163, 113, 247, 0.1) 100%);
         border: 1px solid rgba(56, 139, 253, 0.2);
@@ -66,42 +148,20 @@ st.markdown("""
         background: linear-gradient(90deg, #388bfd, #a371f7);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-size: 2rem;
-        font-weight: 700;
-        margin: 0;
+        font-size: 2rem; font-weight: 700; margin: 0;
     }
-    .hero-header p {
-        color: #8b949e;
-        margin: 4px 0 0;
-        font-size: 0.95rem;
-    }
+    .hero-header p { color: #8b949e !important; margin: 4px 0 0 0; }
 
-    /* Alert cards */
-    .arb-alert {
-        background: linear-gradient(135deg, rgba(0, 255, 157, 0.08) 0%, rgba(0, 200, 120, 0.05) 100%);
-        border: 1px solid rgba(0, 255, 157, 0.3);
-        border-radius: 12px;
-        padding: 16px 20px;
-        margin-bottom: 8px;
-    }
-    .arb-profit { color: #00ff9d; font-size: 1.8rem; font-weight: 700; }
-
-    .yield-card {
-        background: linear-gradient(135deg, rgba(255, 170, 0, 0.06) 0%, rgba(255, 200, 50, 0.03) 100%);
-        border: 1px solid rgba(255, 170, 0, 0.25);
-        border-radius: 12px;
-        padding: 14px 18px;
-        margin-bottom: 8px;
-    }
-    .yield-roi { color: #ffaa00; font-size: 1.4rem; font-weight: 700; }
-
-    .ml-signal {
+    .quant-card {
         background: linear-gradient(135deg, rgba(56, 139, 253, 0.08) 0%, rgba(100, 160, 255, 0.04) 100%);
         border: 1px solid rgba(56, 139, 253, 0.3);
         border-radius: 12px;
-        padding: 14px 18px;
-        margin-bottom: 8px;
+        padding: 16px 20px;
+        margin-bottom: 12px;
     }
+
+    .edge-positive { color: #3fb950 !important; font-weight: 700; }
+    .edge-negative { color: #f85149 !important; font-weight: 700; }
 
     .stat-pill {
         display: inline-block;
@@ -110,299 +170,539 @@ st.markdown("""
         border-radius: 20px;
         padding: 4px 12px;
         font-size: 0.8rem;
-        color: #388bfd;
+        color: #388bfd !important;
         margin-right: 6px;
     }
-    .stat-pill-green { background: rgba(0,255,157,0.1); border-color: rgba(0,255,157,0.3); color: #00ff9d; }
-    .stat-pill-amber { background: rgba(255,170,0,0.1); border-color: rgba(255,170,0,0.3); color: #ffaa00; }
+
+    .explain-box {
+        background: rgba(139, 148, 158, 0.06);
+        border-left: 3px solid #388bfd;
+        border-radius: 0 8px 8px 0;
+        padding: 12px 16px;
+        margin: 8px 0 16px 0;
+        font-size: 0.85rem;
+        color: #c9d1d9 !important;
+    }
+    .explain-box strong, .explain-box b {
+        color: #e6edf3 !important;
+    }
+
+    .weather-card {
+        background: linear-gradient(135deg, rgba(63, 185, 80, 0.08) 0%, rgba(63, 185, 80, 0.02) 100%);
+        border: 1px solid rgba(63, 185, 80, 0.3);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+    }
+
+    .fred-card {
+        background: linear-gradient(135deg, rgba(163, 113, 247, 0.08) 0%, rgba(163, 113, 247, 0.02) 100%);
+        border: 1px solid rgba(163, 113, 247, 0.3);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+    }
+
+    .reasoning-box {
+        background: rgba(56, 139, 253, 0.05);
+        border: 1px solid rgba(56, 139, 253, 0.2);
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 4px 0 12px 0;
+        font-size: 0.82rem;
+        color: #c9d1d9 !important;
+        line-height: 1.5;
+    }
+    .reasoning-box strong {
+        color: #e6edf3 !important;
+    }
+
+    .kalshi-link {
+        display: inline-block;
+        background: linear-gradient(135deg, #388bfd 0%, #a371f7 100%);
+        color: white !important;
+        text-decoration: none;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin-top: 6px;
+    }
+    .kalshi-link:hover { opacity: 0.85; }
 
     .empty-state {
         text-align: center;
         padding: 60px 20px;
-        color: #8b949e;
+        color: #8b949e !important;
     }
-    .empty-state h2 { color: #c9d1d9; margin-bottom: 8px; }
-
-    .stProgress > div > div > div > div {
-        background: linear-gradient(90deg, #388bfd, #a371f7);
-    }
+    .empty-state h2 { color: #e6edf3 !important; margin-bottom: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─── SESSION STATE ───────────────────────────────────────────────────
 if 'scanner' not in st.session_state:
     st.session_state.scanner = HybridScanner()
-if 'data' not in st.session_state:
-    st.session_state.data = None
+if 'markets_loaded' not in st.session_state:
+    st.session_state.markets_loaded = False
 if 'scan_time' not in st.session_state:
     st.session_state.scan_time = None
+# Per-tab data
+for key in ['quant', 'weather_arb', 'fred', 'smart', 'weather_raw', 'arb', 'yield']:
+    if key not in st.session_state:
+        st.session_state[key] = None
+
+# ─── AUTO-SCAN ON FIRST LOAD ────────────────────────────────────────
+if not st.session_state.markets_loaded:
+    with st.spinner("⚡ Auto-scanning Kalshi markets... (first load)"):
+        scanner = st.session_state.scanner
+        count = scanner.fetch_markets()
+        st.session_state.markets_loaded = True
+        st.session_state.scan_time = datetime.now(timezone.utc)
+
+        # Run all tab analyses
+        st.session_state.quant = scanner.scan_quant()
+        st.session_state.weather_arb = scanner.scan_weather_arb()
+        st.session_state.fred = scanner.scan_fred()
+        st.session_state.smart = scanner.scan_smart_money()
+        st.session_state.weather_raw = scanner.scan_weather_raw()
+        st.session_state.arb = scanner.scan_arbitrage()
+        st.session_state['yield'] = scanner.scan_yield_farms()
+
+        # Auto-load backtest
+        try:
+            from src.backtester import fetch_historical_data, simulate_backtest
+            logs = fetch_historical_data()
+            if not logs.empty:
+                st.session_state.backtest = simulate_backtest(logs, bankroll=100)
+        except:
+            pass
 
 # ─── SIDEBAR ─────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
     <div style="text-align: center; padding: 16px 0 8px;">
         <span style="font-size: 2.5rem;">⚡</span>
-        <h2 style="margin: 4px 0 0; background: linear-gradient(90deg, #388bfd, #a371f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Kalshi Pro</h2>
-        <p style="color: #8b949e; font-size: 0.85rem; margin-top: 2px;">Deep Scan (10k Markets) Active</p>
+        <h2 style="margin: 0; background: linear-gradient(90deg, #388bfd, #a371f7);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+        Kalshi Quant Scanner</h2>
+        <p style="color: #8b949e; font-size: 0.9rem;">Vol · Z-Score · Kelly · Weather Arb</p>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("---")
-
-    if st.button("🔄 RUN DEEP SCAN", type="primary", use_container_width=True):
-        with st.spinner("Fetching 10,000 markets to bypass sports..."):
-            st.session_state.data = st.session_state.scanner.run_scan()
+    if st.button("🔄 REFRESH ALL MARKETS", type="primary", use_container_width=True):
+        with st.spinner("📡 Fetching fresh market data..."):
+            scanner = st.session_state.scanner
+            scanner.fetch_markets()
             st.session_state.scan_time = datetime.now(timezone.utc)
+            # Re-run all analyses
+            st.session_state.quant = scanner.scan_quant()
+            st.session_state.weather_arb = scanner.scan_weather_arb()
+            st.session_state.fred = scanner.scan_fred()
+            st.session_state.smart = scanner.scan_smart_money()
+            st.session_state.weather_raw = scanner.scan_weather_raw()
+            st.session_state.arb = scanner.scan_arbitrage()
+            st.session_state['yield'] = scanner.scan_yield_farms()
             st.rerun()
 
     if st.session_state.scan_time:
-        st.caption(f"🕐 Last scan: {st.session_state.scan_time.strftime('%H:%M:%S UTC')}")
-        total = len(st.session_state.scanner.markets)
-        non_sports = len([m for m in st.session_state.scanner.markets if m['category'] != 'Sports'])
-        st.caption(f"📡 {total:,} markets ({non_sports:,} non-sports)")
+        st.caption(f"Last scan: {st.session_state.scan_time.strftime('%H:%M:%S UTC')}")
 
     st.markdown("---")
-    st.info("Scanner filters out Sports by default to find 'Money Markets' (Econ, Politics, Weather).")
+    show_explanations = st.toggle("📖 Show Measure Explanations", value=True)
+    st.markdown("---")
 
-    show_sentiment = st.toggle("📊 Show Sentiment", value=True)
+    # ── Backtest Panel ──
+    with st.expander("📊 Backtest Performance", expanded=False):
+        if show_explanations:
+            st.markdown("""
+            <div class="explain-box" style="font-size: 0.78rem;">
+            <strong>What is this?</strong><br>
+            The backtester replays your model's <em>historical predictions</em> from Azure logs
+            and simulates what would have happened if you traded them with Kelly sizing.<br><br>
+            <b>Win Rate</b> — % of trades that were correct<br>
+            <b>Sharpe</b> — Risk-adjusted return (>1 = good, >2 = great)<br>
+            <b>Max DD</b> — Worst peak-to-trough drawdown<br>
+            <b>Profit Factor</b> — Gross wins / gross losses (>1 = profitable)<br>
+            <b>Direction Accuracy</b> — How often the ML model guesses the right direction (up/down)
+            </div>
+            """, unsafe_allow_html=True)
+
+        if st.button("🔄 Reload Backtest", use_container_width=True):
+            with st.spinner("Fetching Azure logs..."):
+                try:
+                    from src.backtester import fetch_historical_data, simulate_backtest
+                    logs = fetch_historical_data()
+                    if not logs.empty:
+                        st.session_state.backtest = simulate_backtest(logs, bankroll=100)
+                    else:
+                        st.warning("No historical data in Azure.")
+                except Exception as e:
+                    st.error(f"Backtest error: {e}")
+
+        if 'backtest' in st.session_state and st.session_state.backtest:
+            bt = st.session_state.backtest
+            m = bt['metrics']
+            acc = bt.get('accuracy', {})
+
+            cols = st.columns(2)
+            cols[0].metric("Win Rate", f"{m['win_rate']}%")
+            cols[1].metric("Total P&L", f"${m['total_pnl']}")
+            cols = st.columns(2)
+            cols[0].metric("Sharpe", f"{m['sharpe']}")
+            cols[1].metric("Max DD", f"{m['max_drawdown']}%")
+            cols = st.columns(2)
+            cols[0].metric("Trades", m['total_trades'])
+            cols[1].metric("Profit Factor", f"{m['profit_factor']}")
+
+            if acc:
+                st.markdown("---")
+                st.caption("**Model Accuracy**")
+                st.metric("Direction Accuracy", f"{acc.get('direction_accuracy', 0)}%")
+                st.caption(f"{acc.get('direction_correct', 0)}/{acc.get('direction_total', 0)} predictions correct")
+                st.caption(f"Edge filter: >{acc.get('min_edge_used', 10)}% ({acc.get('trades_filtered', 0)} skipped)")
+
+            if bt['equity_curve']:
+                eq_df = pd.DataFrame(bt['equity_curve'], columns=['Time', 'Equity'])
+                eq_df['Time'] = pd.to_datetime(eq_df['Time'])
+                st.line_chart(eq_df.set_index('Time')['Equity'])
 
 # ─── HERO HEADER ─────────────────────────────────────────────────────
 st.markdown("""
 <div class="hero-header">
-    <h1>⚡ Kalshi Pro Scanner</h1>
-    <p>Deep Scan • AI Predictor • Smart Money • Weather • Yield Farming</p>
+<h1>⚡ Kalshi Quant Scanner</h1>
+<p>Black-Scholes Probability · Fractional Kelly · Weather Arb · FRED Economics</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ─── MAIN CONTENT ────────────────────────────────────────────────────
-if st.session_state.data:
-    data = st.session_state.data
-    scanner = st.session_state.scanner
+scanner = st.session_state.scanner
 
+if st.session_state.markets_loaded and scanner.markets:
     # ── Metrics Row ──
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("📡 Markets", f"{len(scanner.markets):,}")
-    c2.metric("🤖 AI Signals", len(data['ml_alpha']))
-    c3.metric("⛈️ Weather", len(data['weather']))
-    c4.metric("🎯 Arbitrage", len(data['arbitrage']),
-              delta="FREE MONEY" if data['arbitrage'] else None,
-              delta_color="normal" if data['arbitrage'] else "off")
-    c5.metric("💰 Yield Farms", len(data['yield_farming']))
+    c2.metric("⚡ Quant", len(st.session_state.quant or []))
+    c3.metric("⛈️ Weather Arb", len(st.session_state.weather_arb or []))
+    c4.metric("💰 Arb", len(st.session_state.arb or []))
+    c5.metric("🌾 Yield", len(st.session_state.get('yield') or []))
 
-    st.markdown("")
-
-    # ── Category breakdown ──
+    # Category pills
     cats = {}
     for m in scanner.markets:
         cats[m['category']] = cats.get(m['category'], 0) + 1
-    cat_pills = " ".join([f'<span class="stat-pill">{cat}: {count}</span>' for cat, count in sorted(cats.items(), key=lambda x: -x[1])])
-    st.markdown(f'<div style="margin-bottom: 16px;">{cat_pills}</div>', unsafe_allow_html=True)
+    pills_html = " ".join([f'<span class="stat-pill">{k}: {v}</span>' for k, v in sorted(cats.items(), key=lambda x: -x[1])])
+    st.markdown(f'<div style="margin-bottom: 16px;">{pills_html}</div>', unsafe_allow_html=True)
 
-    # ── Tabs ──
-    tab_ml, tab_sniper, tab_weather, tab_macro = st.tabs([
-        "📈 AI Predictor",
-        "💸 Sniper (Easy Money)",
-        "⛈️ Weather",
-        "🏛️ Politics & Econ"
+    # ─── TABS ────────────────────────────────────────────────────
+    tab_quant, tab_weather, tab_smart, tab_free = st.tabs([
+        "⚡ Hourly Scalps (Quant)",
+        "⛈️ Weather Arb",
+        "🏛️ Smart Money + FRED",
+        "💸 Free Money"
     ])
 
     # ═══════════════════════════════════════════════════════════════
-    # TAB 1: AI PREDICTOR — ML Signals
+    # TAB 1: QUANT — Vol + Black-Scholes + Kelly
     # ═══════════════════════════════════════════════════════════════
-    with tab_ml:
-        st.markdown("### 🤖 Machine Learning Signals")
-        st.caption("Predictions based on your trained LightGBM models for SPX, Nasdaq, BTC, ETH.")
+    with tab_quant:
+        qcol1, qcol2 = st.columns([6, 1])
+        qcol1.markdown("### ⚡ Quantitative Financial Signals")
+        if qcol2.button("🔄", key="refresh_quant", help="Refresh quant signals only"):
+            with st.spinner("Re-running quant analysis..."):
+                st.session_state.quant = scanner.scan_quant()
+                st.rerun()
 
-        if data['ml_alpha']:
-            for sig in data['ml_alpha']:
+        st.caption("Black-Scholes probability + ML drift + fractional Kelly sizing. Max bet: $20.")
+
+        if show_explanations:
+            st.markdown("""
+            <div class="explain-box">
+            <strong>How This Works:</strong><br>
+            <b>① Volatility (σ)</b> — Hourly std dev of log returns over 24 periods. Measures how much the asset moves per hour.<br>
+            <b>② Drift (μ)</b> — Your LightGBM model predicts the next-hour price. Drift = (Pred - Current) / Current.<br>
+            <b>③ Z-Score</b> — Standardized distance: (ln(Price/Strike) + Drift) / σ√t. Positive = likely above strike.<br>
+            <b>④ My Prob</b> — CDF(Z) × 100. Our calculated probability the asset finishes above the strike.<br>
+            <b>⑤ Edge</b> — My Prob − Kalshi Price. Positive edge = market is underpricing the outcome.<br>
+            <b>⑥ Kelly Bet</b> — Quarter-Kelly sizing: only risk what the math says. Capped at $20.
+            </div>
+            """, unsafe_allow_html=True)
+
+        signals = st.session_state.quant or []
+        if signals:
+            for sig in signals:
+                edge_class = "edge-positive" if sig['Edge'] > 0 else "edge-negative"
+                edge_sign = "+" if sig['Edge'] > 0 else ""
+
                 st.markdown(f"""
-                <div class="ml-signal">
+                <div class="quant-card">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div>
-                            <strong style="font-size: 1.05rem; color: #c9d1d9;">{sig['Market']}</strong><br>
-                            <span style="color: #8b949e; font-size: 0.85rem;">
-                                Asset: {sig['Asset']} • Model Prediction: {sig['Model_Pred']:.2f} • Strike: {sig['Strike']:.0f}
-                            </span>
+                            <strong style="color: #c9d1d9; font-size: 1.05rem;">{sig['Market']}</strong>
+                            <span class="stat-pill">{sig['Asset']}</span>
+                            <span class="stat-pill">{sig['Action']}</span>
                         </div>
                         <div style="text-align: right;">
-                            <span style="color: #00ff9d; font-size: 1.2rem; font-weight: 700;">{sig['Action']}</span><br>
-                            <span style="color: #8b949e; font-size: 0.8rem;">
-                                Kalshi: {sig['Kalshi_Price']}¢ • Edge: {sig['Edge']} • Conf: {sig['Confidence']}
-                            </span>
+                            <span class="{edge_class}" style="font-size: 1.3rem;">{edge_sign}{sig['Edge']:.1f}%</span>
+                            <br><span style="color: #8b949e; font-size: 0.8rem;">Kelly: ${sig['Kelly_Bet']:.2f}</span>
                         </div>
                     </div>
+                    <div style="margin-top: 8px; display: flex; gap: 16px; font-size: 0.85rem; color: #8b949e;">
+                        <span>📊 Price: ${sig['Current_Price']:,.2f}</span>
+                        <span>🎯 Pred: ${sig['Model_Pred']:,.2f}</span>
+                        <span>⚡ Strike: {sig['Strike']:,.0f}</span>
+                        <span>σ: {sig['Volatility']:.5f}</span>
+                        <span>P(>{sig['Strike']:,.0f}): {sig['My_Prob']:.1f}%</span>
+                        <span>⏱ {sig['Hours_Left']:.1f}h</span>
+                    </div>
+                    <div class="reasoning-box">
+                        💡 <strong>Why this trade:</strong> {sig.get('Reasoning', '')}
+                    </div>
+                    <a href="{sig.get('Kalshi_URL', '#')}" target="_blank" class="kalshi-link">🔗 Trade on Kalshi</a>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("No strong ML signals found matching current Kalshi markets. This can happen when models aren't trained yet or no markets match the predictions.")
-            st.caption("**Models checked:** SPX, BTC, ETH, Nasdaq — run `python -c 'from src.model import train_model; ...'` to train.")
+            st.info("No quant signals found. This happens when models aren't trained yet or no Kalshi financial markets have >5% edge.")
 
     # ═══════════════════════════════════════════════════════════════
-    # TAB 2: SNIPER — Arbitrage + Yield Farming
+    # TAB 2: WEATHER ARB
     # ═══════════════════════════════════════════════════════════════
-    with tab_sniper:
+    with tab_weather:
+        wcol1, wcol2 = st.columns([6, 1])
+        wcol1.markdown("### ⛈️ Weather Arbitrage")
+        if wcol2.button("🔄", key="refresh_weather", help="Refresh weather arb only"):
+            with st.spinner("Re-scanning weather markets..."):
+                st.session_state.weather_arb = scanner.scan_weather_arb()
+                st.session_state.weather_raw = scanner.scan_weather_raw()
+                st.rerun()
+
+        st.caption("Open-Meteo forecast vs Kalshi market prices. Pure math — no ML guessing.")
+
+        if show_explanations:
+            st.markdown("""
+            <div class="explain-box">
+            <strong>How This Works:</strong><br>
+            <b>① Forecast</b> — Open-Meteo API provides free, accurate weather forecasts (temp, rain, snow) for 16 cities.<br>
+            <b>② Strike</b> — Kalshi weather markets ask "Will temp be above X°?" or "Will it rain?"<br>
+            <b>③ Edge</b> — Our probability (from forecast) minus Kalshi's price. >15% = actionable trade.<br>
+            <b>④ Why It Works</b> — Retail Kalshi bettors don't check professional weather models. Pure information arb.
+            </div>
+            """, unsafe_allow_html=True)
+
+        weather_arb = st.session_state.weather_arb or []
+        if weather_arb:
+            for w in weather_arb:
+                edge_sign = "+" if w['edge'] > 0 else ""
+                st.markdown(f"""
+                <div class="weather-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong style="color: #c9d1d9;">{w['title']}</strong>
+                            <span class="stat-pill">🌡 {w['type']}</span>
+                            <span class="stat-pill">📍 {w['city']}</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span class="edge-positive" style="font-size: 1.3rem;">{edge_sign}{w['edge']:.1f}%</span>
+                            <br><span style="color: #8b949e;">{w['action']}</span>
+                        </div>
+                    </div>
+                    <div style="margin-top: 8px; font-size: 0.85rem; color: #8b949e;">
+                        🌤 Forecast: {w['forecast']} · Strike: {w['strike']} ·
+                        Our Prob: {w['my_prob']}% · Market: {w['mkt_prob']}¢ ·
+                        Vol: {w.get('volume', 0):,}
+                    </div>
+                    <a href="{w.get('kalshi_url', '#')}" target="_blank" class="kalshi-link">🔗 Trade on Kalshi</a>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No weather mispricings found (>15% edge required). Markets may be efficiently priced right now.")
+
+        st.markdown("---")
+        st.markdown("#### 🌍 All Weather Markets")
+        weather_raw = st.session_state.weather_raw or []
+        if weather_raw:
+            wdf = pd.DataFrame(weather_raw)[['title', 'price', 'volume', 'ticker']]
+            wdf.columns = ['Market', 'Price (¢)', 'Volume', 'Ticker']
+            search = st.text_input("🔍 Filter weather markets", key="weather_search")
+            if search:
+                wdf = wdf[wdf['Market'].str.contains(search, case=False)]
+            st.dataframe(wdf, use_container_width=True, hide_index=True)
+
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 3: SMART MONEY + FRED
+    # ═══════════════════════════════════════════════════════════════
+    with tab_smart:
+        scol1, scol2 = st.columns([6, 1])
+        scol1.markdown("### 🏛️ Smart Money + FRED Economics")
+        if scol2.button("🔄", key="refresh_fred", help="Refresh FRED data only"):
+            with st.spinner("Refreshing FRED + Smart Money..."):
+                st.session_state.scanner.fred_dashboard = None  # Force re-fetch
+                st.session_state.fred = scanner.scan_fred()
+                st.session_state.smart = scanner.scan_smart_money()
+                st.rerun()
+
+        fred_data = st.session_state.fred or {}
+        dashboard = fred_data.get('dashboard', {})
+
+        if dashboard:
+            st.markdown("#### 📈 FRED Macro Dashboard")
+            if show_explanations:
+                st.markdown("""
+                <div class="explain-box">
+                <strong>Real-Time FRED Data:</strong> Federal Reserve Economic Data provides official macro indicators.
+                These are compared against Kalshi economic markets to find where the market diverges from official data.
+                </div>
+                """, unsafe_allow_html=True)
+
+            mcols = st.columns(5)
+            for i, key in enumerate(['fed_rate', 'unemployment', 'inflation_exp', 'treasury_10y', 'vix']):
+                if key in dashboard and dashboard[key]['value'] is not None:
+                    d = dashboard[key]
+                    delta = f"{d['change']:+.2f}" if d['change'] is not None else None
+                    mcols[i % 5].metric(
+                        d['name'].split('(')[0].strip()[:20],
+                        f"{d['value']:.2f}{d['unit'] if d['unit'] != 'Index' else ''}",
+                        delta=delta
+                    )
+
+            mcols2 = st.columns(5)
+            for i, key in enumerate(['treasury_2y', 'consumer_sent', 'gdp_growth', 'debt_gdp']):
+                if key in dashboard and dashboard[key]['value'] is not None:
+                    d = dashboard[key]
+                    delta = f"{d['change']:+.2f}" if d['change'] is not None else None
+                    mcols2[i % 5].metric(
+                        d['name'].split('(')[0].strip()[:20],
+                        f"{d['value']:.1f}{d['unit'] if d['unit'] not in ['Index', 'Billions $', 'Thousands'] else ''}",
+                        delta=delta
+                    )
+
+            yc = fred_data.get('yield_curve')
+            if yc:
+                st.markdown("---")
+                yc_cols = st.columns(4)
+                yc_cols[0].metric("10Y Yield", f"{yc['latest_10y']:.2f}%")
+                yc_cols[1].metric("2Y Yield", f"{yc['latest_2y']:.2f}%")
+                yc_cols[2].metric("Spread", f"{yc['spread']:.2f}%")
+                yc_cols[3].metric("Inverted?", "⚠️ YES" if yc['inverted'] else "✅ NO")
+                if yc['history']:
+                    yc_df = pd.DataFrame(yc['history'])
+                    yc_df['date'] = pd.to_datetime(yc_df['date'])
+                    st.line_chart(yc_df.set_index('date')['spread'], use_container_width=True)
+            st.markdown("---")
+
+        fred_analysis = fred_data.get('analysis', [])
+        if fred_analysis:
+            st.markdown("#### 🔬 FRED vs Kalshi Analysis")
+            for a in fred_analysis[:20]:
+                st.markdown(f"""
+                <div class="fred-card">
+                    <strong style="color: #c9d1d9;">{a['market']}</strong>
+                    <span class="stat-pill">{a['category']}</span>
+                    <div style="margin-top: 6px; font-size: 0.85rem; color: #8b949e;">
+                        📊 {a['indicator_name']}: <strong>{a['current_indicator']}</strong> ·
+                        Kalshi: {a['kalshi_price']}¢ · Vol: {a.get('volume', 0):,}<br>
+                        💡 {a['insight']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            st.markdown("---")
+
+        st.markdown("#### 🏛️ Economic & Political Markets")
+        smart = st.session_state.smart or []
+        if smart:
+            sm_df = pd.DataFrame(smart)[['title', 'category', 'price', 'volume', 'ticker']]
+            sm_df.columns = ['Market', 'Category', 'Price (¢)', 'Volume', 'Ticker']
+            cat_filter = st.multiselect("Filter by category", sm_df['Category'].unique(), default=sm_df['Category'].unique())
+            search = st.text_input("🔍 Search markets", key="smart_search")
+            filtered = sm_df[sm_df['Category'].isin(cat_filter)]
+            if search:
+                filtered = filtered[filtered['Market'].str.contains(search, case=False)]
+            st.dataframe(filtered.sort_values('Volume', ascending=False), use_container_width=True, hide_index=True)
+
+    # ═══════════════════════════════════════════════════════════════
+    # TAB 4: FREE MONEY
+    # ═══════════════════════════════════════════════════════════════
+    with tab_free:
+        fcol1, fcol2 = st.columns([6, 1])
+        fcol1.markdown("### 💸 Free Money")
+        if fcol2.button("🔄", key="refresh_free", help="Refresh arb + yield"):
+            with st.spinner("Refreshing arb + yield..."):
+                st.session_state.arb = scanner.scan_arbitrage()
+                st.session_state['yield'] = scanner.scan_yield_farms()
+                st.rerun()
+
         # ── ARBITRAGE ──
-        st.markdown("### 🎯 Arbitrage Detection")
+        st.markdown("#### 🎯 Arbitrage Detection")
         st.caption("Markets where `Cost(YES) + Cost(NO) < $1.00` — guaranteed profit.")
 
-        if data['arbitrage']:
-            st.error(f"🚨 **{len(data['arbitrage'])} ARBITRAGE OPPORTUNITIES DETECTED**")
-            for arb in data['arbitrage']:
+        if show_explanations:
+            st.markdown("""
+            <div class="explain-box">
+            <strong>How This Works:</strong><br>
+            Binary outcomes sum to 100%. If YES + NO < 100¢, buying both guarantees profit.
+            Example: YES at 45¢ + NO at 52¢ = 97¢ cost → $3 guaranteed profit per contract.
+            </div>
+            """, unsafe_allow_html=True)
+
+        arb = st.session_state.arb or []
+        if arb:
+            for a in arb[:10]:
                 st.markdown(f"""
-                <div class="arb-alert">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <strong style="font-size: 1.05rem; color: #c9d1d9;">{arb['title']}</strong><br>
-                            <span style="color: #8b949e; font-size: 0.85rem;">
-                                Buy YES ({arb['price']}¢) + NO ({arb['no_price']}¢) = {arb['cost']}¢
-                            </span>
-                        </div>
-                        <div style="text-align: right;">
-                            <div class="arb-profit">+{arb['profit']}¢</div>
-                            <span style="color: #8b949e; font-size: 0.8rem;">per share guaranteed</span>
-                        </div>
+                <div class="quant-card">
+                    <strong style="color: #3fb950;">{a['title']}</strong>
+                    <span class="stat-pill">{a['category']}</span>
+                    <div style="margin-top: 6px; font-size: 0.85rem; color: #8b949e;">
+                        YES: {a['price']}¢ + NO: {a['no_price']}¢ = {a['cost']}¢ →
+                        <span class="edge-positive">FREE ${(a['profit'] / 100):.2f}</span>
                     </div>
-                    <div style="margin-top: 8px;">
-                        <span class="stat-pill-green">Vol: {arb['volume']:,}</span>
-                        <span class="stat-pill">{arb['category']}</span>
-                    </div>
+                    <a href="{a.get('kalshi_url', '#')}" target="_blank" class="kalshi-link">🔗 Trade on Kalshi</a>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("✅ No arbitrage mispricing detected. Market is efficient right now.")
+            st.info("No arbitrage opportunities. Market is efficient (YES + NO ≥ $1.00 everywhere).")
 
         st.markdown("---")
 
         # ── YIELD FARMING ──
-        st.markdown("### 💰 Yield Farming (Non-Sports)")
-        st.caption("High probability (>92%) trades expiring in <48h. Economics, Politics, Weather only.")
+        st.markdown("#### 🌾 Yield Farming")
+        st.caption("High-probability bets (92-98¢) expiring within 48h. Low risk, steady returns.")
 
-        if data['yield_farming']:
-            for farm in data['yield_farming']:
+        if show_explanations:
+            st.markdown("""
+            <div class="explain-box">
+            <strong>How This Works:</strong><br>
+            Markets at 92-98¢ are almost certainly going to resolve YES. Buying at 95¢ pays 100¢ = 5.3% ROI.
+            Only picks markets expiring within 48h to minimize time-risk. Sports excluded.
+            </div>
+            """, unsafe_allow_html=True)
+
+        yf = st.session_state.get('yield') or []
+        if yf:
+            for y in yf[:15]:
                 st.markdown(f"""
-                <div class="yield-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="quant-card">
+                    <div style="display: flex; justify-content: space-between;">
                         <div>
-                            <strong style="color: #c9d1d9;">{farm['title']}</strong><br>
-                            <span style="color: #8b949e; font-size: 0.85rem;">
-                                {farm['category']} • Vol: {farm['volume']:,}
-                            </span>
+                            <strong style="color: #c9d1d9;">{y['title']}</strong>
+                            <span class="stat-pill">{y['category']}</span>
                         </div>
                         <div style="text-align: right;">
-                            <div class="yield-roi">+{farm['roi']:.1f}%</div>
-                            <span style="color: #8b949e; font-size: 0.8rem;">
-                                Cost: {farm['price']}¢ • {farm['hours_left']}h left
-                            </span>
+                            <span class="edge-positive">{y['roi']:.1f}% ROI</span>
+                            <br><span style="color: #8b949e; font-size: 0.8rem;">⏱ {y['hours_left']}h left</span>
                         </div>
                     </div>
+                    <div style="margin-top: 4px; font-size: 0.85rem; color: #8b949e;">
+                        Buy at {y['price']}¢ → Payout 100¢ · Vol: {y.get('volume', 0):,}
+                    </div>
+                    <a href="{y.get('kalshi_url', '#')}" target="_blank" class="kalshi-link">🔗 Trade on Kalshi</a>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.warning("No yield farms found. Markets may be too far from expiry or no high-probability non-sports bets available.")
+            st.info("No yield farming opportunities found. No 92-98¢ bets expiring within 48 hours.")
 
-    # ═══════════════════════════════════════════════════════════════
-    # TAB 3: WEATHER — Climate & Weather Markets
-    # ═══════════════════════════════════════════════════════════════
-    with tab_weather:
-        st.markdown("### ⛈️ Climate & Weather")
-        st.caption("Hurricanes, Temperature, Rain, Snow — bet on the weather.")
-
-        if data['weather']:
-            w_search = st.text_input("🔍 Filter Weather (e.g. 'NYC', 'Rain', 'Temperature')", "", key="weather_search")
-
-            filtered_w = [w for w in data['weather'] if w_search.lower() in w['title'].lower()] if w_search else data['weather']
-
-            st.caption(f"Showing {len(filtered_w)} of {len(data['weather'])} weather markets")
-
-            for w in filtered_w:
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([4, 1, 1])
-                    with c1:
-                        st.markdown(f"**{w['title']}**")
-                        st.caption(f"Expires: {w['expiration'] or 'N/A'}")
-                    with c2:
-                        pct = min(w['price'] / 100, 1.0)
-                        st.progress(pct, text=f"Prob: {w['price']}%")
-                    with c3:
-                        st.metric("Volume", f"{w['volume']:,}")
-        else:
-            st.info("No active weather markets found. These may appear seasonally (hurricane season, extreme weather events).")
-
-    # ═══════════════════════════════════════════════════════════════
-    # TAB 4: MACRO — Economics & Politics
-    # ═══════════════════════════════════════════════════════════════
-    with tab_macro:
-        st.markdown("### 🏛️ Smart Money (Economics & Politics)")
-        st.caption("Fed Rates, CPI, GDP, Elections — where the smart money plays.")
-
-        if data['smart_money']:
-            # Sub-filter
-            econ_only = [m for m in data['smart_money'] if m['category'] == 'Economics']
-            pol_only = [m for m in data['smart_money'] if m['category'] == 'Politics']
-
-            e1, e2 = st.columns(2)
-            e1.metric("📊 Economics", len(econ_only))
-            e2.metric("🏛️ Politics", len(pol_only))
-
-            for m in data['smart_money']:
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([4, 1, 1])
-                    with c1:
-                        st.markdown(f"**{m['title']}**")
-                        st.caption(f"{m['category']} • `{m['ticker']}`")
-                    with c2:
-                        pct = min(m['price'] / 100, 1.0)
-                        st.progress(pct, text=f"Prob: {m['price']}%")
-                    with c3:
-                        st.metric("Volume", f"{m['volume']:,}")
-        else:
-            st.info("No active Economics or Politics markets found.")
-
-    # ── Sentiment Panel ──
-    if show_sentiment:
-        st.markdown("---")
-        with st.expander("📊 Market Sentiment", expanded=False):
-            render_sentiment_panel(ticker="SPX")
-
-# ─── EMPTY STATE ─────────────────────────────────────────────────────
 else:
-    st.markdown("")
     st.markdown("""
     <div class="empty-state">
-        <h2>👋 Ready to Deep Scan</h2>
-        <p style="font-size: 1.1rem; margin-bottom: 20px;">
-            Click <strong>🔄 RUN DEEP SCAN</strong> in the sidebar to fetch 10k markets and filter out the noise.
-        </p>
-        <div style="display: flex; justify-content: center; gap: 32px; margin-top: 24px;">
-            <div style="text-align: center;">
-                <span style="font-size: 2rem;">📈</span>
-                <p style="margin-top: 4px;"><strong>AI Predictor</strong></p>
-                <p style="font-size: 0.85rem;">SPX • BTC • ETH • Nasdaq</p>
-            </div>
-            <div style="text-align: center;">
-                <span style="font-size: 2rem;">💸</span>
-                <p style="margin-top: 4px;"><strong>Sniper</strong></p>
-                <p style="font-size: 0.85rem;">Arb • Yield Farming</p>
-            </div>
-            <div style="text-align: center;">
-                <span style="font-size: 2rem;">⛈️</span>
-                <p style="margin-top: 4px;"><strong>Weather</strong></p>
-                <p style="font-size: 0.85rem;">Climate • Temperature</p>
-            </div>
-            <div style="text-align: center;">
-                <span style="font-size: 2rem;">🏛️</span>
-                <p style="margin-top: 4px;"><strong>Politics & Econ</strong></p>
-                <p style="font-size: 0.85rem;">Fed • CPI • Elections</p>
-            </div>
-        </div>
+        <h2>⚡ Loading...</h2>
+        <p>Fetching markets from Kalshi. This may take a moment on first load.</p>
     </div>
     """, unsafe_allow_html=True)
-
-    if show_sentiment:
-        st.markdown("---")
-        with st.expander("📊 Market Sentiment", expanded=True):
-            render_sentiment_panel(ticker="SPX")
-
-# ─── FOOTER ──────────────────────────────────────────────────────────
-st.markdown("---")
-st.caption("⚠️ For informational purposes only. Not financial advice. Trading involves risk.")

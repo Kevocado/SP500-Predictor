@@ -216,58 +216,174 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
 
 import scipy.stats as stats
 import numpy as np
-from sklearn.metrics import mean_squared_error
+import requests
+from scipy.stats import norm
 
-def calculate_probability(predicted_price, strike_price, model_rmse):
+
+# ═══════════════════════════════════════════════════════════════════════
+# QUANT FOUNDATION — Volatility, Probability, Kelly Criterion
+# ═══════════════════════════════════════════════════════════════════════
+
+def get_market_volatility(df, window=24):
     """
-    Returns the % probability that price will be ABOVE the strike.
+    Calculates hourly volatility from rolling log returns.
+    
+    For a 1-hour Kalshi market:
+      - Sigma(hourly) = std(log_returns) over `window` periods
+      - This is the key input for Black-Scholes probability
     
     Args:
-        predicted_price (float): The model's predicted price.
-        strike_price (float): The target strike price.
-        model_rmse (float): The Root Mean Squared Error of the model (standard deviation of error).
+        df: DataFrame with 'Close' column (hourly or minute data)
+        window: Rolling window size (default 24 = 1 trading day of hourly bars)
         
     Returns:
-        float: Probability (0-100) that price > strike.
+        float: Hourly standard deviation of log returns (sigma)
     """
-    if model_rmse == 0:
-        return 100.0 if predicted_price > strike_price else 0.0
-        
-    # Z-Score: How many standard deviations is the strike away from our prediction?
-    # We want Prob(Price > Strike).
-    # If Pred (5915) > Strike (5910), we expect high probability.
-    # Z = (Pred - Strike) / RMSE
-    # Example: (5915 - 5910) / 5 = 1.0. CDF(1.0) = ~0.84.
-    # So there is an 84% chance the price is ABOVE the strike.
-    z_score = (predicted_price - strike_price) / model_rmse
+    df = df.copy()
+    df['log_ret'] = np.log(df['Close'] / df['Close'].shift(1))
+    hourly_vol = df['log_ret'].rolling(window=window).std().iloc[-1]
     
-    # CDF gives prob that variable is LESS than Z. 
-    # But here we constructed Z such that positive Z means Pred > Strike.
-    # Standard Normal CDF of 1.0 is 0.84.
-    # So we can just use cdf(z_score).
-    probability_above = stats.norm.cdf(z_score)
-    
-    # Clamp probability to avoid 0% or 100% (0.1% to 99.9%)
-    probability_above = max(0.001, min(0.999, probability_above))
-    
-    return probability_above * 100
+    return hourly_vol if not np.isnan(hourly_vol) else 0.01  # Fallback
 
-def get_recent_rmse(model, df, ticker="SPY"):
+
+def calculate_probability(current_price, predicted_price, strike, hourly_vol, hours_left):
     """
-    Calculates the RMSE of the model on the provided dataframe.
-    If df is small, returns a default value.
-    """
-    from .evaluation import evaluate_model
+    Returns probability (0-100%) that Price > Strike at expiration.
+    Uses Black-Scholes-inspired Z-Score logic.
     
-    if df.empty or len(df) < 60: # Need enough data for lags and target
-        # Return default RMSEs based on ticker volatility if data is insufficient
-        defaults = {"SPX": 15.0, "Nasdaq": 25.0, "SPY": 1.5, "^GSPC": 15.0, "^NDX": 25.0}
-        return defaults.get(ticker, 5.0)
+    The math:
+      1. Drift = (Predicted - Current) / Current  (from ML model)
+      2. Sigma_t = hourly_vol * sqrt(hours_left)   (scale vol to time)
+      3. Log_Distance = ln(Current / Strike)        (moneyness)
+      4. Z = (Log_Distance + Drift) / Sigma_t       (standardized)
+      5. Prob = CDF(Z) * 100                        (normal CDF)
+    
+    Args:
+        current_price: Live asset price
+        predicted_price: ML model's 1-hour prediction
+        strike: Kalshi market strike price
+        hourly_vol: From get_market_volatility()
+        hours_left: Hours until market expiration
         
+    Returns:
+        float: Probability (0.1-99.9%) that price > strike
+    """
+    if hours_left <= 0:
+        return 0.1 if current_price < strike else 99.9
+    if hourly_vol <= 0:
+        return 50.0
+
+    # 1. Expected Drift (from ML Model)
+    drift = (predicted_price - current_price) / current_price
+
+    # 2. Volatility over time horizon
+    sigma_t = hourly_vol * np.sqrt(hours_left)
+
+    # 3. Distance to Strike (Log Moneyness)
+    if current_price <= 0 or strike <= 0:
+        return 50.0
+    log_distance = np.log(current_price / strike)
+
+    # 4. Z-Score
+    z_score = (log_distance + drift) / sigma_t
+
+    # 5. Prob of being ABOVE Strike
+    prob_above = norm.cdf(z_score) * 100
+
+    # Clamp to avoid 0/100
+    return max(0.1, min(99.9, prob_above))
+
+
+def kelly_criterion(my_prob, market_prob, bankroll=20, fractional=0.25):
+    """
+    Calculates bet size ($) using Fractional Kelly Criterion.
+    
+    The math:
+      - Odds b = (1 - market_price) / market_price
+      - Kelly f = p - q/b  (where p = my_prob, q = 1-p)
+      - Safe f = f * fractional  (quarter Kelly for safety)
+      - Bet = bankroll * safe_f
+    
+    Args:
+        my_prob: Our calculated probability (0-100)
+        market_prob: Kalshi price in cents (0-100)
+        bankroll: Max capital to risk (default $20)
+        fractional: Kelly fraction (default 0.25 = quarter Kelly)
+        
+    Returns:
+        float: Dollar amount to bet (0 if no edge)
+    """
+    p = my_prob / 100
+    q = 1 - p
+    price = market_prob / 100
+
+    if price >= 1.0 or price <= 0:
+        return 0
+
+    b = (1 - price) / price  # Odds offered by the market
+
+    if b <= 0:
+        return 0
+
+    f = p - (q / b)
+
+    # Only bet if we have an edge
+    if f <= 0:
+        return 0
+
+    # Fractional Kelly (Safety)
+    safe_f = f * fractional
+    bet_size = bankroll * safe_f
+
+    return round(min(bet_size, bankroll), 2)
+
+
+def get_orderbook(market_ticker):
+    """
+    Fetches live order book from Kalshi for a specific market.
+    
+    Returns:
+        dict: {
+            'yes_bids': [[price_cents, qty], ...],
+            'no_bids': [[price_cents, qty], ...],
+            'total_yes_depth': int,
+            'total_no_depth': int,
+            'spread': int (cents)
+        }
+        or None if unavailable
+    """
     try:
-        _, metrics, _ = evaluate_model(model, df, ticker=ticker)
-        return metrics.get('RMSE', 5.0)
+        API_KEY = os.getenv("KALSHI_API_KEY")
+        headers = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
+        
+        r = requests.get(
+            f"https://api.elections.kalshi.com/trade-api/v2/markets/{market_ticker}/orderbook",
+            headers=headers, timeout=5
+        )
+        if r.status_code != 200:
+            return None
+            
+        data = r.json().get('orderbook', {})
+        yes_bids = data.get('yes', []) or []
+        no_bids = data.get('no', []) or []
+        
+        # Calculate depth
+        total_yes = sum(qty for _, qty in yes_bids)
+        total_no = sum(qty for _, qty in no_bids)
+        
+        # Calculate spread
+        best_yes = yes_bids[-1][0] if yes_bids else 0  # Highest yes bid
+        best_no = no_bids[-1][0] if no_bids else 0    # Highest no bid
+        spread = max(0, 100 - best_yes - best_no)
+        
+        return {
+            'yes_bids': yes_bids,
+            'no_bids': no_bids,
+            'total_yes_depth': total_yes,
+            'total_no_depth': total_no,
+            'spread': spread,
+            'best_yes': best_yes,
+            'best_no': best_no
+        }
     except Exception:
-        # Fallback
-        defaults = {"SPX": 15.0, "Nasdaq": 25.0, "SPY": 1.5, "^GSPC": 15.0, "^NDX": 25.0}
-        return defaults.get(ticker, 5.0)
+        return None
