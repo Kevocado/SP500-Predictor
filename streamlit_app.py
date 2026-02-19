@@ -6,8 +6,43 @@ Auto-scans on launch. Per-tab refresh. Direct Kalshi links. Trade reasoning.
 import streamlit as st
 import pandas as pd
 import numpy as np
+import os
 from datetime import datetime, timezone
 from src.market_scanner import HybridScanner
+
+
+# ─── AZURE TABLE: FETCH PRE-COMPUTED QUANT OPPORTUNITIES ────────────
+@st.cache_data(ttl=60)  # Cache locally for 60s so we don't spam Azure
+def fetch_opportunities():
+    """Read high-conviction quant signals from Azure Table (written by background_scanner.py)."""
+    try:
+        from azure.data.tables import TableClient
+        conn_str = os.getenv("AZURE_CONNECTION_STRING")
+        if not conn_str:
+            return [], None
+
+        client = TableClient.from_connection_string(conn_str, "CurrentOpportunities")
+        entities = list(client.query_entities("PartitionKey eq 'Live'"))
+
+        # Sort by Edge (highest first)
+        entities.sort(key=lambda x: float(x.get('Edge', 0)), reverse=True)
+
+        # Get last-updated timestamp from Azure entity metadata
+        last_update = None
+        if entities:
+            ts = entities[0].get('_metadata', {}).get('timestamp') or entities[0].get('Timestamp')
+            if ts:
+                if isinstance(ts, str):
+                    last_update = pd.to_datetime(ts).strftime("%H:%M UTC")
+                else:
+                    last_update = ts.strftime("%H:%M UTC")
+            else:
+                last_update = datetime.now(timezone.utc).strftime("%H:%M UTC")
+
+        return entities, last_update
+    except Exception as e:
+        print(f"fetch_opportunities error: {e}")
+        return [], None
 
 st.set_page_config(
     page_title="Kalshi Quant Scanner",
@@ -251,31 +286,9 @@ for key in ['quant', 'weather_arb', 'fred', 'smart', 'weather_raw', 'arb', 'yiel
     if key not in st.session_state:
         st.session_state[key] = None
 
-# ─── AUTO-SCAN ON FIRST LOAD ────────────────────────────────────────
-if not st.session_state.markets_loaded:
-    with st.spinner("⚡ Auto-scanning Kalshi markets... (first load)"):
-        scanner = st.session_state.scanner
-        count = scanner.fetch_markets()
-        st.session_state.markets_loaded = True
-        st.session_state.scan_time = datetime.now(timezone.utc)
-
-        # Run all tab analyses
-        st.session_state.quant = scanner.scan_quant()
-        st.session_state.weather_arb = scanner.scan_weather_arb()
-        st.session_state.fred = scanner.scan_fred()
-        st.session_state.smart = scanner.scan_smart_money()
-        st.session_state.weather_raw = scanner.scan_weather_raw()
-        st.session_state.arb = scanner.scan_arbitrage()
-        st.session_state['yield'] = scanner.scan_yield_farms()
-
-        # Auto-load backtest
-        try:
-            from src.backtester import fetch_historical_data, simulate_backtest
-            logs = fetch_historical_data()
-            if not logs.empty:
-                st.session_state.backtest = simulate_backtest(logs, bankroll=100)
-        except:
-            pass
+# ─── NO AUTO-SCAN — Page loads instantly ────────────────────────────
+# Quant tab reads from Azure Table (background_scanner.py writes to it).
+# Other tabs load on-demand when user clicks REFRESH ALL or per-tab refresh.
 
 # ─── SIDEBAR ─────────────────────────────────────────────────────────
 with st.sidebar:
@@ -294,8 +307,7 @@ with st.sidebar:
             scanner = st.session_state.scanner
             scanner.fetch_markets()
             st.session_state.scan_time = datetime.now(timezone.utc)
-            # Re-run all analyses
-            st.session_state.quant = scanner.scan_quant()
+            # Re-run non-quant analyses (quant comes from Azure Table)
             st.session_state.weather_arb = scanner.scan_weather_arb()
             st.session_state.fred = scanner.scan_fred()
             st.session_state.smart = scanner.scan_smart_money()
@@ -377,21 +389,25 @@ st.markdown("""
 # ─── MAIN CONTENT ────────────────────────────────────────────────────
 scanner = st.session_state.scanner
 
-if st.session_state.markets_loaded and scanner.markets:
+if True:  # Always show main content — no blocking gate
     # ── Metrics Row ──
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📡 Markets", f"{len(scanner.markets):,}")
-    c2.metric("⚡ Quant", len(st.session_state.quant or []))
+    quant_opps, quant_last_updated = fetch_opportunities()
+    market_count = len(scanner.markets) if scanner.markets else 0
+    c1.metric("📡 Markets", f"{market_count:,}")
+    c2.metric("⚡ Quant", len(quant_opps))
     c3.metric("⛈️ Weather Arb", len(st.session_state.weather_arb or []))
     c4.metric("💰 Arb", len(st.session_state.arb or []))
     c5.metric("🌾 Yield", len(st.session_state.get('yield') or []))
 
-    # Category pills
-    cats = {}
-    for m in scanner.markets:
-        cats[m['category']] = cats.get(m['category'], 0) + 1
-    pills_html = " ".join([f'<span class="stat-pill">{k}: {v}</span>' for k, v in sorted(cats.items(), key=lambda x: -x[1])])
-    st.markdown(f'<div style="margin-bottom: 16px;">{pills_html}</div>', unsafe_allow_html=True)
+    if scanner.markets:
+        cats = {}
+        for m in scanner.markets:
+            cats[m['category']] = cats.get(m['category'], 0) + 1
+        pills_html = " ".join([f'<span class="stat-pill">{k}: {v}</span>' for k, v in sorted(cats.items(), key=lambda x: -x[1])])
+        st.markdown(f'<div style="margin-bottom: 16px;">{pills_html}</div>', unsafe_allow_html=True)
+    else:
+        st.caption("💡 Click **REFRESH ALL MARKETS** in the sidebar to load Weather, FRED, and other live tabs.")
 
     # ─── TABS ────────────────────────────────────────────────────
     tab_quant, tab_weather, tab_smart, tab_free = st.tabs([
@@ -407,10 +423,15 @@ if st.session_state.markets_loaded and scanner.markets:
     with tab_quant:
         qcol1, qcol2 = st.columns([6, 1])
         qcol1.markdown("### ⚡ Quantitative Financial Signals")
-        if qcol2.button("🔄", key="refresh_quant", help="Refresh quant signals only"):
-            with st.spinner("Re-running quant analysis..."):
-                st.session_state.quant = scanner.scan_quant()
-                st.rerun()
+        if qcol2.button("🔄", key="refresh_quant", help="Re-read latest from Azure"):
+            st.cache_data.clear()
+            st.rerun()
+
+        # Status bar: last updated timestamp
+        if quant_last_updated:
+            st.caption(f"📡 Last updated: {quant_last_updated} · Auto-refreshes every 15 mins via GitHub Actions")
+        else:
+            st.warning("⏳ Waiting for Background Scanner... No data in Azure Table yet.")
 
         st.caption("Black-Scholes probability + ML drift + fractional Kelly sizing. Max bet: $20.")
 
@@ -427,41 +448,47 @@ if st.session_state.markets_loaded and scanner.markets:
             </div>
             """, unsafe_allow_html=True)
 
-        signals = st.session_state.quant or []
-        if signals:
-            for sig in signals:
-                edge_class = "edge-positive" if sig['Edge'] > 0 else "edge-negative"
-                edge_sign = "+" if sig['Edge'] > 0 else ""
+        if quant_opps:
+            for sig in quant_opps:
+                edge_val = float(sig.get('Edge', 0))
+                edge_class = "edge-positive" if edge_val > 0 else "edge-negative"
+                edge_sign = "+" if edge_val > 0 else ""
+                kelly_val = float(sig.get('KellySuggestion', 0))
+                curr_price = float(sig.get('CurrentPrice', 0))
+                model_pred = float(sig.get('ModelPred', 0))
+                strike_val = sig.get('Strike', '0')
+                vol_val = float(sig.get('Volatility', 0))
+                confidence = float(sig.get('Confidence', 0))
+                hours_left = float(sig.get('HoursLeft', 0))
 
                 st.markdown(f"""
                 <div class="quant-card">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div>
-                            <strong style="color: #c9d1d9; font-size: 1.05rem;">{sig['Market']}</strong>
-                            <span class="stat-pill">{sig['Asset']}</span>
-                            <span class="stat-pill">{sig['Action']}</span>
+                            <strong style="color: #c9d1d9; font-size: 1.05rem;">{sig.get('Market', '')}</strong>
+                            <span class="stat-pill">{sig.get('Asset', '')}</span>
+                            <span class="stat-pill">{sig.get('Action', '')}</span>
                         </div>
                         <div style="text-align: right;">
-                            <span class="{edge_class}" style="font-size: 1.3rem;">{edge_sign}{sig['Edge']:.1f}%</span>
-                            <br><span style="color: #8b949e; font-size: 0.8rem;">Kelly: ${sig['Kelly_Bet']:.2f}</span>
+                            <span class="{edge_class}" style="font-size: 1.3rem;">{edge_sign}{edge_val:.1f}%</span>
+                            <br><span style="color: #8b949e; font-size: 0.8rem;">Kelly: ${kelly_val:.2f}</span>
                         </div>
                     </div>
                     <div style="margin-top: 8px; display: flex; gap: 16px; font-size: 0.85rem; color: #8b949e;">
-                        <span>📊 Price: ${sig['Current_Price']:,.2f}</span>
-                        <span>🎯 Pred: ${sig['Model_Pred']:,.2f}</span>
-                        <span>⚡ Strike: {sig['Strike']:,.0f}</span>
-                        <span>σ: {sig['Volatility']:.5f}</span>
-                        <span>P(>{sig['Strike']:,.0f}): {sig['My_Prob']:.1f}%</span>
-                        <span>⏱ {sig['Hours_Left']:.1f}h</span>
+                        <span>📊 Price: ${curr_price:,.2f}</span>
+                        <span>🎯 Pred: ${model_pred:,.2f}</span>
+                        <span>⚡ Strike: {strike_val}</span>
+                        <span>σ: {vol_val:.5f}</span>
+                        <span>P(>{strike_val}): {confidence:.1f}%</span>
+                        <span>⏱ {hours_left:.1f}h</span>
                     </div>
-                    <div class="reasoning-box">
-                        💡 <strong>Why this trade:</strong> {sig.get('Reasoning', '')}
-                    </div>
-                    <a href="{sig.get('Kalshi_URL', '#')}" target="_blank" class="kalshi-link">🔗 Trade on Kalshi</a>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("No quant signals found. This happens when models aren't trained yet or no Kalshi financial markets have >5% edge.")
+            if quant_last_updated:
+                st.info("No high-conviction quant signals at this time. The background scanner found no opportunities with >5% edge.")
+            else:
+                st.info("Background scanner hasn't run yet. Push to GitHub and trigger the workflow, or run `python scripts/background_scanner.py` locally.")
 
     # ═══════════════════════════════════════════════════════════════
     # TAB 2: WEATHER ARB
@@ -699,10 +726,3 @@ if st.session_state.markets_loaded and scanner.markets:
         else:
             st.info("No yield farming opportunities found. No 92-98¢ bets expiring within 48 hours.")
 
-else:
-    st.markdown("""
-    <div class="empty-state">
-        <h2>⚡ Loading...</h2>
-        <p>Fetching markets from Kalshi. This may take a moment on first load.</p>
-    </div>
-    """, unsafe_allow_html=True)

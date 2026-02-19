@@ -1,0 +1,34 @@
+name: Market Scanner
+
+on:
+  schedule:
+    # Public repo — unlimited free minutes on standard runners
+    # Run every 15 minutes for maximum freshness
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Manual trigger from GitHub Actions tab
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install azure-data-tables
+
+      - name: Run Background Scanner
+        env:
+          AZURE_CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python scripts/background_scanner.py

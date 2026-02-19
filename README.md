@@ -13,14 +13,14 @@
 
 ## 🏗 Architecture
 
-| Layer | Technology |
-|---|---|
-| Frontend | [Streamlit](https://streamlit.io/) |
-| Modeling | [LightGBM](https://lightgbm.readthedocs.io/) |
-| Price Data | [YFinance](https://pypi.org/project/yfinance/) |
-| Market Data | [Kalshi API](https://kalshi.com/) |
-| Sentiment | alternative.me Fear & Greed API, VIX, price momentum |
-| Config | YAML (`config/settings.yaml`) |
+| Layer       | Technology                                           |
+| ----------- | ---------------------------------------------------- |
+| Frontend    | [Streamlit](https://streamlit.io/)                      |
+| Modeling    | [LightGBM](https://lightgbm.readthedocs.io/)            |
+| Price Data  | [YFinance](https://pypi.org/project/yfinance/)          |
+| Market Data | [Kalshi API](https://kalshi.com/)                       |
+| Sentiment   | alternative.me Fear & Greed API, VIX, price momentum |
+| Config      | YAML (`config/settings.yaml`)                      |
 
 ## 📂 Project Structure
 
@@ -52,6 +52,7 @@
 ## 🚀 Setup & Installation
 
 ### Prerequisites
+
 - Python 3.9+
 
 ### Installation
@@ -63,7 +64,9 @@ pip install -r requirements.txt
 ```
 
 ### Environment Setup
+
 Create a `.env` file in the root:
+
 ```env
 KALSHI_API_KEY=your_kalshi_api_key_here
 # Optional: AZURE_CONNECTION_STRING=...
@@ -72,6 +75,7 @@ KALSHI_API_KEY=your_kalshi_api_key_here
 ## 🖥️ Usage
 
 ```bash
+
 streamlit run streamlit_app.py
 ```
 
@@ -80,4 +84,5 @@ streamlit run streamlit_app.py
 - **Sentiment**: Expand the sentiment panel in either tab for composite scores and averages
 
 ## ⚠️ Disclaimer
+
 This tool is for informational and educational purposes only. Prediction markets are high-risk. Trade at your own risk.
