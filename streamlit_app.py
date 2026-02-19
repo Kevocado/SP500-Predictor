@@ -286,9 +286,32 @@ for key in ['quant', 'weather_arb', 'fred', 'smart', 'weather_raw', 'arb', 'yiel
     if key not in st.session_state:
         st.session_state[key] = None
 
-# ─── NO AUTO-SCAN — Page loads instantly ────────────────────────────
+# ─── AUTO-FETCH ON FIRST LOAD ───────────────────────────────────────
+# Fetches Kalshi markets + runs lightweight (non-ML) tab analyses.
 # Quant tab reads from Azure Table (background_scanner.py writes to it).
-# Other tabs load on-demand when user clicks REFRESH ALL or per-tab refresh.
+if not st.session_state.markets_loaded:
+    with st.spinner("📡 Loading live markets..."):
+        scanner = st.session_state.scanner
+        scanner.fetch_markets()
+        st.session_state.markets_loaded = True
+        st.session_state.scan_time = datetime.now(timezone.utc)
+
+        # Run non-quant tab analyses (these are fast — no ML)
+        st.session_state.weather_arb = scanner.scan_weather_arb()
+        st.session_state.fred = scanner.scan_fred()
+        st.session_state.smart = scanner.scan_smart_money()
+        st.session_state.weather_raw = scanner.scan_weather_raw()
+        st.session_state.arb = scanner.scan_arbitrage()
+        st.session_state['yield'] = scanner.scan_yield_farms()
+
+        # Auto-load backtest
+        try:
+            from src.backtester import fetch_historical_data, simulate_backtest
+            logs = fetch_historical_data()
+            if not logs.empty:
+                st.session_state.backtest = simulate_backtest(logs, bankroll=100)
+        except:
+            pass
 
 # ─── SIDEBAR ─────────────────────────────────────────────────────────
 with st.sidebar:
