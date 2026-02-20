@@ -1,10 +1,10 @@
 name: Market Scanner
 
 on:
-  schedule:
-    # Public repo — unlimited free minutes on standard runners
-    # Run every 15 minutes for maximum freshness
-    - cron: '*/15 * * * *'
+  # schedule:
+  #   # Public repo — unlimited free minutes on standard runners
+  #   # Run every 15 minutes for maximum freshness
+  #   - cron: '*/15 * * * *'
   workflow_dispatch: # Manual trigger from GitHub Actions tab
 
 jobs:
