@@ -22,7 +22,7 @@ from azure.storage.blob import BlobServiceClient
 
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features
-from src.model import (
+from scripts.engines.quant_engine import (
     load_model,
     predict_next_hour,
     calculate_probability,
@@ -30,6 +30,9 @@ from src.model import (
     kelly_criterion,
 )
 from src.kalshi_feed import get_real_kalshi_markets
+from src.ai_validator import scrutinize_trade
+from scripts.engines.macro_engine import calculate_macro_edge
+from scripts.engines.weather_engine import calculate_weather_edge
 import pandas as pd
 
 # ─── Environment ─────────────────────────────────────────────────────
@@ -211,14 +214,40 @@ def run_snapshot_logic():
         pass
 
     # ── Run scans ──
-    print("\n🧠 Running Quant ML...")
+    print("\n🧠 Running Quant ML (Paper Trading Lab)...")
     snapshot_records, ui_opportunities = scan_quant_ml()
 
-    # Future expansion:
-    # print("⛈️ Running Weather ML...")
-    # weather_snap, weather_ui = scan_weather_ml()
-    # snapshot_records.extend(weather_snap)
-    # ui_opportunities.extend(weather_ui)
+    # Process Paper Trading Opportunities (Quant ML)
+    # The quant ML is now explicitly paper trade only as per the architecture
+    for op in ui_opportunities:
+        op['PartitionKey'] = "QUANT_ENGINE"
+        op['Status'] = "PAPER TRADE ONLY"
+
+    print("\n🌍 Running Macro Engine...")
+    macro_ops = calculate_macro_edge()
+    for op in macro_ops:
+        print(f"  Scrutinizing Macro Trade: {op['MarketTicker']}...")
+        approved, reasoning = scrutinize_trade(op)
+        if approved:
+            print(f"  ✅ AI APPROVED: {reasoning}")
+            op['AI_Reasoning'] = reasoning
+            op['Status'] = "AI APPROVED"
+            ui_opportunities.append(op)
+        else:
+            print(f"  ❌ AI REJECTED: {reasoning}")
+
+    print("\n⛈️ Running Weather Engine...")
+    weather_ops = calculate_weather_edge()
+    for op in weather_ops:
+        print(f"  Scrutinizing Weather Trade: {op['MarketTicker']}...")
+        approved, reasoning = scrutinize_trade(op)
+        if approved:
+            print(f"  ✅ AI APPROVED: {reasoning}")
+            op['AI_Reasoning'] = reasoning
+            op['Status'] = "AI APPROVED"
+            ui_opportunities.append(op)
+        else:
+            print(f"  ❌ AI REJECTED: {reasoning}")
 
     # ── Save Full Snapshot to Blob (Historical / Backtesting) ──
     full_snapshot = {
@@ -233,11 +262,11 @@ def run_snapshot_logic():
     print(f"✅ Saved full snapshot: {blob_name} ({len(snapshot_records)} markets)")
 
     # ── Update Azure Table for UI (Live View) ──
-    # Clear stale "Live" entries
+    # Clear stale entries from both engines
     try:
-        entities = table_client.query_entities("PartitionKey eq 'Live'")
+        entities = table_client.query_entities("PartitionKey eq 'QUANT_ENGINE' or PartitionKey eq 'MACRO_ENGINE' or PartitionKey eq 'WEATHER_ENGINE'")
         for e in entities:
-            table_client.delete_entity("Live", e['RowKey'])
+            table_client.delete_entity(e['PartitionKey'], e['RowKey'])
     except Exception:
         pass
 

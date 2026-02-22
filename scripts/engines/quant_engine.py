@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+import scipy.stats as stats
+import requests
+from scipy.stats import norm
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
@@ -92,9 +95,6 @@ def train_model(df, ticker="SPY"):
         'feature_fraction': 0.9
     }
     
-    # Simple training on the last split for final model, or retrain on all?
-    # Let's do a validation loop to print metrics, then train on all data.
-    
     fold = 1
     for train_index, val_index in tscv.split(X):
         X_train, X_val = X.iloc[train_index], X.iloc[val_index]
@@ -169,15 +169,11 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
     Raises:
         FeatureMismatchError: If the data features don't match model expectations.
     """
-    # We need to generate features for the last row
-    # Assumes current_data_df has enough history for lag features
-    
     # Load feature names
     feature_names_path = os.path.join(MODEL_DIR, f"features_{ticker}.pkl")
     if os.path.exists(feature_names_path):
         feature_cols = joblib.load(feature_names_path)
     else:
-        # Fallback if feature list missing (shouldn't happen if trained)
         raise FileNotFoundError(f"Feature list not found for {ticker}. Train model first.")
 
     # Get the last row of features
@@ -214,30 +210,9 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
     prediction = model.predict(last_row_aligned.values)
     return prediction[0]
 
-import scipy.stats as stats
-import numpy as np
-import requests
-from scipy.stats import norm
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# QUANT FOUNDATION — Volatility, Probability, Kelly Criterion
-# ═══════════════════════════════════════════════════════════════════════
-
 def get_market_volatility(df, window=24):
     """
     Calculates hourly volatility from rolling log returns.
-    
-    For a 1-hour Kalshi market:
-      - Sigma(hourly) = std(log_returns) over `window` periods
-      - This is the key input for Black-Scholes probability
-    
-    Args:
-        df: DataFrame with 'Close' column (hourly or minute data)
-        window: Rolling window size (default 24 = 1 trading day of hourly bars)
-        
-    Returns:
-        float: Hourly standard deviation of log returns (sigma)
     """
     df = df.copy()
     df['log_ret'] = np.log(df['Close'] / df['Close'].shift(1))
@@ -245,28 +220,10 @@ def get_market_volatility(df, window=24):
     
     return hourly_vol if not np.isnan(hourly_vol) else 0.01  # Fallback
 
-
 def calculate_probability(current_price, predicted_price, strike, hourly_vol, hours_left):
     """
     Returns probability (0-100%) that Price > Strike at expiration.
     Uses Black-Scholes-inspired Z-Score logic.
-    
-    The math:
-      1. Drift = (Predicted - Current) / Current  (from ML model)
-      2. Sigma_t = hourly_vol * sqrt(hours_left)   (scale vol to time)
-      3. Log_Distance = ln(Current / Strike)        (moneyness)
-      4. Z = (Log_Distance + Drift) / Sigma_t       (standardized)
-      5. Prob = CDF(Z) * 100                        (normal CDF)
-    
-    Args:
-        current_price: Live asset price
-        predicted_price: ML model's 1-hour prediction
-        strike: Kalshi market strike price
-        hourly_vol: From get_market_volatility()
-        hours_left: Hours until market expiration
-        
-    Returns:
-        float: Probability (0.1-99.9%) that price > strike
     """
     if hours_left <= 0:
         return 0.1 if current_price < strike else 99.9
@@ -293,25 +250,9 @@ def calculate_probability(current_price, predicted_price, strike, hourly_vol, ho
     # Clamp to avoid 0/100
     return max(0.1, min(99.9, prob_above))
 
-
 def kelly_criterion(my_prob, market_prob, bankroll=20, fractional=0.25):
     """
     Calculates bet size ($) using Fractional Kelly Criterion.
-    
-    The math:
-      - Odds b = (1 - market_price) / market_price
-      - Kelly f = p - q/b  (where p = my_prob, q = 1-p)
-      - Safe f = f * fractional  (quarter Kelly for safety)
-      - Bet = bankroll * safe_f
-    
-    Args:
-        my_prob: Our calculated probability (0-100)
-        market_prob: Kalshi price in cents (0-100)
-        bankroll: Max capital to risk (default $20)
-        fractional: Kelly fraction (default 0.25 = quarter Kelly)
-        
-    Returns:
-        float: Dollar amount to bet (0 if no edge)
     """
     p = my_prob / 100
     q = 1 - p
@@ -337,20 +278,9 @@ def kelly_criterion(my_prob, market_prob, bankroll=20, fractional=0.25):
 
     return round(min(bet_size, bankroll), 2)
 
-
 def get_orderbook(market_ticker):
     """
     Fetches live order book from Kalshi for a specific market.
-    
-    Returns:
-        dict: {
-            'yes_bids': [[price_cents, qty], ...],
-            'no_bids': [[price_cents, qty], ...],
-            'total_yes_depth': int,
-            'total_no_depth': int,
-            'spread': int (cents)
-        }
-        or None if unavailable
     """
     try:
         API_KEY = os.getenv("KALSHI_API_KEY")
@@ -387,3 +317,79 @@ def get_orderbook(market_ticker):
         }
     except Exception:
         return None
+
+def generate_trading_signals(ticker, predicted_price, current_price, rmse):
+    """
+    Generates trading signals for both Direction (Strikes) and Volatility (Ranges).
+    """
+    signals = {
+        'status': 'PAPER TRADE ONLY',
+        'strikes': [],
+        'ranges': []
+    }
+    
+    # --- 1. Strike Signals (Direction) ---
+    if current_price > 10000: # BTC-like
+        step = 100
+        buffer = 50
+    elif current_price > 1000: # ETH/SPX-like
+        step = 10
+        buffer = 5
+    else:
+        step = 1
+        buffer = 0.5
+        
+    base_price = round(current_price / step) * step
+    strikes_to_check = [base_price + (k * step) for k in range(-5, 6)]
+    
+    for strike in strikes_to_check:
+        z_score = (predicted_price - strike) / rmse
+        prob = stats.norm.cdf(z_score) * 100
+        
+        action = "PASS"
+        if predicted_price > strike + buffer:
+            action = "🟢 BUY YES"
+        elif predicted_price < strike - buffer:
+            action = "🔴 BUY NO"
+            
+        if action != "PASS":
+            signals['strikes'].append({
+                "Strike": f"> ${strike}",
+                "Prob": f"{prob:.1f}%",
+                "Action": action,
+                "Raw_Strike": strike
+            })
+
+    # --- 2. Range Signals (Volatility) ---
+    if ticker in ["BTC", "BTC-USD"]:
+        range_step = 1000
+    elif ticker in ["ETH", "ETH-USD"]:
+        range_step = 100
+    elif ticker in ["SPX", "NDX", "Nasdaq"]:
+        range_step = 50
+    else:
+        range_step = 10
+        
+    pred_base = (predicted_price // range_step) * range_step
+    
+    ranges_to_check = []
+    for k in range(-2, 3):
+        start = pred_base + (k * range_step)
+        end = start + range_step
+        ranges_to_check.append((start, end))
+        
+    for r_start, r_end in ranges_to_check:
+        in_range = r_start <= predicted_price < r_end
+        
+        action = "PASS"
+        if in_range:
+            action = "🟢 BUY YES"
+            
+        signals['ranges'].append({
+            "Range": f"${r_start:,.0f} - ${r_end:,.0f}",
+            "Predicted In Range?": "✅ YES" if in_range else "❌ NO",
+            "Action": action,
+            "Is_Winner": in_range
+        })
+        
+    return signals
