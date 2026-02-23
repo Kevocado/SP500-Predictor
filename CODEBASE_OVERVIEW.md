@@ -56,12 +56,14 @@ graph TB
 |---|---|---|
 | `data_loader.py` | Fetches OHLCV from YFinance. Ticker mapping (SPX→^GSPC). | `fetch_data()`, `save_data()`, `load_data()` |
 | `feature_engineering.py` | Creates technical indicators (RSI, MACD, Bollinger, VWAP, log returns, lags). | `create_features()`, `prepare_training_data()` |
-| `model.py` | Hourly LightGBM: train, predict, validate features, calculate probability via Z-score. | `train_model()`, `predict_next_hour()`, `calculate_probability()`, `FeatureMismatchError` |
-| `model_daily.py` | Daily LightGBM: aggregates hourly data into daily features. | `prepare_daily_data()`, `train_daily_model()`, `predict_daily_close()` |
+| `model.py` | Hourly LightGBM: train, predict, validate features, calculate probability. Dynamically loads via Hugging Face Hub. | `train_model()`, `predict_next_hour()`, `FeatureMismatchError` |
+| `model_daily.py` | Daily LightGBM: aggregates hourly data into daily features. Dynamically loads via Hugging Face Hub. | `prepare_daily_data()`, `train_daily_model()`, `load_daily_model()` |
 | `kalshi_feed.py` | Fetches markets from Kalshi API (targeted + fallback). Processes strikes/ranges. | `get_real_kalshi_markets()`, `check_kalshi_connection()` |
-| `market_scanner.py` | **[NEW]** Kalshi scanner: multi-asset scan, edge/Kelly signal generation, signal card UI. | `KalshiScanner`, `SignalGenerator`, `ScannerDashboard` |
-| `sentiment.py` | **[NEW]** 3-source sentiment: Fear & Greed API, VIX-derived, momentum. Composite scores. | `SentimentAnalyzer`, `get_sentiment_features()`, `render_sentiment_panel()` |
+| `kalshi_portfolio.py`| **[NEW]** Read-only Kalshi portfolio client with RSA-PSS auth, tracks live P&L and triggers Smart Exit alerts. | `KalshiPortfolio`, `get_portfolio_summary()` |
+| `market_scanner.py` | Kalshi scanner: multi-asset scan, edge/Kelly signal generation, signal card UI. | `KalshiScanner`, `SignalGenerator`, `ScannerDashboard` |
+| `sentiment.py` | 3-source sentiment: Fear & Greed API, VIX-derived, momentum. Composite scores. | `SentimentAnalyzer`, `get_sentiment_features()`, `render_sentiment_panel()` |
 | `signals.py` | Generates directional (BUY YES/NO) and range signals from model predictions. | `generate_trading_signals()` |
+| `backtester.py` | **[NEW]** Predicts P&L of historical logs natively with Kalshi math. Calculates Sharpe Ratio and Max Drawdown. | `simulate_backtest()`, `calculate_metrics()` |
 | `evaluation.py` | Model metrics: MAE, RMSE, directional accuracy, Brier score, PnL backtest. | `evaluate_model()` |
 | `utils.py` | Market status detection, timeframe selection, market categorization. | `get_market_status()`, `determine_best_timeframe()`, `categorize_markets()` |
 | `azure_logger.py` | Logs predictions to Azure Blob Storage. Fetches historical logs. | `log_prediction()`, `fetch_all_logs()` |
@@ -90,12 +92,13 @@ graph TB
 
 1. **Fetch**: `data_loader.py` pulls OHLCV from YFinance for each asset
 2. **Engineer**: `feature_engineering.py` creates ~20 technical indicators
-3. **Train/Load**: `model.py` / `model_daily.py` trains or loads LightGBM models (auto-retrain on feature drift via `FeatureMismatchError`)
+3. **Cache & Load**: `model.py` / `model_daily.py` dynamically fetches latest `.pkl` weights from the Hugging Face Hub (`KevinSigey/Kalshi-LightGBM`).
 4. **Market Data**: `kalshi_feed.py` fetches live Kalshi markets, categorized into hourly/daily/range buckets
 5. **Predict**: Models predict next-hour or end-of-day prices
 6. **Signal**: `signals.py` generates BUY YES/NO signals by comparing model probability to market prices
-7. **Sentiment**: `sentiment.py` overlays composite sentiment from 3 sources
-8. **Display**: `streamlit_app.py` renders everything in a tabbed UI
+7. **Risk & Defense**: `kalshi_portfolio.py` monitors active positions and raises "Smart Exit Alerts" on decaying edge or high Market Heat.
+8. **Sentiment**: `sentiment.py` overlays composite sentiment from 3 sources
+9. **Display**: `streamlit_app.py` renders everything in a tabbed UI, including the `backtester.py` Risk Management tab.
 
 ---
 

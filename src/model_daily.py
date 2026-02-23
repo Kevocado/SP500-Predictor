@@ -128,7 +128,24 @@ def predict_daily_close(model, current_df_features):
     return prediction
 
 def load_daily_model(ticker="SPX"):
-    path = f"model/lgbm_model_daily_{ticker}.pkl"
-    if os.path.exists(path):
-        return joblib.load(path)
+    """
+    Dynamically loads the Daily Close model from Hugging Face Hub.
+    Falls back to local /model directory if HF is unreachable.
+    """
+    repo_id = "KevinSigey/Kalshi-LightGBM"
+    filename = f"models/lgbm_model_daily_{ticker}.pkl"
+    local_path = f"model/lgbm_model_daily_{ticker}.pkl"
+    
+    try:
+        from huggingface_hub import hf_hub_download
+        # Download and cache the latest model from HF
+        cached_path = hf_hub_download(repo_id=repo_id, filename=filename)
+        return joblib.load(cached_path)
+    except Exception as e:
+        print(f"HF Hub Pull Failed for {ticker} (Daily): {e}")
+        # Fallback to local
+        if os.path.exists(local_path):
+            print(f"Loading local fallback for {ticker} (Daily)")
+            return joblib.load(local_path)
+        
     return None

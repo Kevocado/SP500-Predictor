@@ -144,11 +144,18 @@ class KalshiPortfolio:
             if r.status_code == 200:
                 return r.json()
             else:
-                print(f"  Kalshi API {endpoint}: {r.status_code} — {r.text[:200]}")
+                # Silently fail for market data if needed, but log for others
+                if "/markets/" not in endpoint:
+                    print(f"  Kalshi API {endpoint}: {r.status_code} — {r.text[:200]}")
                 return None
         except Exception as e:
-            print(f"  Kalshi API error: {e}")
+            if "/markets/" not in endpoint:
+                print(f"  Kalshi API error: {e}")
             return None
+
+    def get_market_data(self, ticker):
+        """Get raw market data for a single ticker."""
+        return self._get(f"/markets/{ticker}")
 
     def get_balance(self):
         """Get account balance. Returns dict with 'balance' in cents."""
@@ -208,8 +215,21 @@ class KalshiPortfolio:
             summary['total_positions'] = len(positions)
 
             for pos in positions:
+                ticker = pos.get('ticker')
                 # total_traded = total cost in cents, market_exposure = current value in cents
                 summary['total_invested'] += float(pos.get('total_traded_dollars', pos.get('total_traded', 0) / 100))
+                
+                # Fetch live price for accurate exposure
+                m_data = self.get_market_data(ticker)
+                if m_data and m_data.get('market'):
+                    m = m_data['market']
+                    # Use yes_ask/yes_bid to estimate mid-market
+                    yes_ask = m.get('yes_ask', 0)
+                    yes_bid = m.get('yes_bid', 0)
+                    current_price = (yes_ask + yes_bid) / 2 if (yes_ask and yes_bid) else (yes_ask or yes_bid or 0)
+                    pos['current_price'] = current_price
+                    pos['market_exposure_dollars'] = (current_price * pos.get('position', 0)) / 100
+                
                 summary['market_exposure'] += float(pos.get('market_exposure_dollars', pos.get('market_exposure', 0) / 100))
 
             # Settlements

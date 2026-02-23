@@ -24,6 +24,19 @@ class FeatureMismatchError(Exception):
             f"This usually means new features were added. Auto-retraining required."
         )
 
+def get_hf_path(filename):
+    """Downloads file from HF Hub and returns local path, or fallback."""
+    repo_id = "KevinSigey/Kalshi-LightGBM"
+    local_path = os.path.join(MODEL_DIR, os.path.basename(filename))
+    try:
+        from huggingface_hub import hf_hub_download
+        return hf_hub_download(repo_id=repo_id, filename=filename)
+    except Exception as e:
+        print(f"HF Hub Pull Failed for {filename}: {e}")
+        if os.path.exists(local_path):
+            return local_path
+    return None
+
 def validate_model_features(model, ticker):
     """
     Validates that the model's expected features match the saved feature list.
@@ -35,10 +48,10 @@ def validate_model_features(model, ticker):
     Returns:
         tuple: (is_valid, expected_count, actual_count, feature_list)
     """
-    feature_names_path = os.path.join(MODEL_DIR, f"features_{ticker}.pkl")
+    feature_names_path = get_hf_path(f"models/features_{ticker}.pkl")
     
-    if not os.path.exists(feature_names_path):
-        print(f"⚠️ Feature list not found for {ticker}. Cannot validate.")
+    if not feature_names_path or not os.path.exists(feature_names_path):
+        print(f"⚠️ Feature list not found for {ticker} on HF or locally. Cannot validate.")
         return (False, 0, 0, [])
     
     try:
@@ -59,7 +72,10 @@ def validate_model_features(model, ticker):
         print(f"❌ Error validating features for {ticker}: {e}")
         return (False, 0, 0, [])
 
-def get_model_path(ticker):
+def get_model_path(ticker, download=False):
+    if download:
+        path = get_hf_path(f"models/lgbm_model_{ticker}.pkl")
+        if path: return path
     return os.path.join(MODEL_DIR, f"lgbm_model_{ticker}.pkl")
 
 def train_model(df, ticker="SPY"):
@@ -134,8 +150,8 @@ def load_model(ticker="SPY"):
     Returns:
         tuple: (model, needs_retraining) where needs_retraining is True if feature mismatch detected
     """
-    model_path = get_model_path(ticker)
-    if not os.path.exists(model_path):
+    model_path = get_model_path(ticker, download=True)
+    if not model_path or not os.path.exists(model_path):
         print(f"Model file {model_path} not found.")
         return None, True  # Model missing, needs training
     
@@ -169,12 +185,12 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
     Raises:
         FeatureMismatchError: If the data features don't match model expectations.
     """
-    # Load feature names
-    feature_names_path = os.path.join(MODEL_DIR, f"features_{ticker}.pkl")
-    if os.path.exists(feature_names_path):
+    # Load feature names dynamically from HF Hub
+    feature_names_path = get_hf_path(f"models/features_{ticker}.pkl")
+    if feature_names_path and os.path.exists(feature_names_path):
         feature_cols = joblib.load(feature_names_path)
     else:
-        raise FileNotFoundError(f"Feature list not found for {ticker}. Train model first.")
+        raise FileNotFoundError(f"Feature list not found for {ticker} on HF Hub. Train model first.")
 
     # Get the last row of features
     last_row = current_data_df.iloc[[-1]]

@@ -16,9 +16,12 @@ pinned: false
 
 - **Real-Time Market Scanner**: Fetches and categorizes live Kalshi markets into Hourly, End of Day, and Range opportunities.
 - **AI-Driven Probability**: LightGBM regressors for hourly (1-min data) and daily (1-hr data) predictions with auto-retraining on feature drift.
+- **Cloud Model Delivery**: Dynamically loads and caches the latest ML `.pkl` weights directly from the **Hugging Face Hub** (`huggingface_hub`) for seamless updates.
 - **Kalshi Market Scanner**: Dedicated tab that scans all assets, calculates edge and Kelly sizing, and renders signal cards.
+- **Institutional Risk & Backtesting**: Includes historical equity curve simulations with **Sharpe Ratio** and **Max Drawdown** metrics based on exact Kalshi payout math.
+- **Smart Exit Alerts**: Active portfolio monitoring with dynamic warnings for decaying edge (<2%) or macroeconomic **FEAR** regime spikes.
 - **Sentiment Analysis**: Composite sentiment scoring from 3 free sources — Crypto Fear & Greed Index, VIX-derived sentiment, and price momentum — with averages display.
-- **Opportunity Detection**: Edge calculation, moneyness filtering, and Alpha Picks highlighting.
+- **Cross-Venue Intelligence**: Monitors Kalshi vs. PredictIt to surface low-risk arbitrage discrepancies (>5% delta).
 - **Dark-mode "Bloomberg" aesthetic** with asset pills, integrated PnL simulator, and live market context.
 
 ## 🏗 Architecture

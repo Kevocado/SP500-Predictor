@@ -35,8 +35,9 @@ from scripts.engines.quant_engine import (
     get_market_volatility,
     kelly_criterion,
 )
-from src.kalshi_feed import get_real_kalshi_markets
 from src.ai_validator import AIValidator
+from src.news_analyzer import NewsAnalyzer
+from src.predictit_engine import PredictItEngine
 import pandas as pd
 
 # ─── Environment ─────────────────────────────────────────────────────
@@ -215,39 +216,6 @@ def scan_quant_ml():
 # MAIN ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════════
 
-def run_scan():
-    """Main scanning logic — prioritizes real edge markets."""
-    now = datetime.now(timezone.utc)
-    print(f"🚀 Starting Multi-Engine Scan at {now.isoformat()}")
-
-    # ── Initialize Azure clients ──
-    blob_service = BlobServiceClient.from_connection_string(CONN_STR)
-    live_table = TableClient.from_connection_string(CONN_STR, "LiveOpportunities")
-    paper_table = TableClient.from_connection_string(CONN_STR, "PaperTradingSignals")
-
-    for table in [live_table, paper_table]:
-        try:
-            table.create_table()
-        except Exception:
-            pass
-    try:
-        blob_service.create_container("market-snapshots")
-    except Exception:
-        pass
-
-    # ══════════════ TIER 1: REAL EDGE ══════════════
-    # Engines fetch their own Kalshi markets via series_ticker (fastest method)
-    # AI validation is ON-DEMAND in the Streamlit UI (avoids rate limits)
-    real_edge_ops = scan_real_edge()
-
-    # ── Discord Alerts (for high-conviction trades) ──
-    try:
-        notifier = DiscordNotifier()
-        if notifier.is_enabled():
-            notifier.send_alert(real_edge_ops, min_edge=30.0)
-    except Exception as e:
-        print(f"  ⚠️ Discord alert failed: {e}")
-
 def calculate_annualized_ev(edge_pct, expiration_str):
     """Calculates Annualized Expected Value."""
     try:
@@ -262,35 +230,88 @@ def calculate_annualized_ev(edge_pct, expiration_str):
         return (edge_pct * 365) / days_to_res
     except Exception: return 0
 
+def run_scan():
+    """Main scanning logic — prioritizes real edge markets."""
+    now = datetime.now(timezone.utc)
+    print(f"🚀 Starting Multi-Engine Scan at {now.isoformat()}")
+
+    # ── Initialize Azure clients ──
+    try:
+        blob_service = BlobServiceClient.from_connection_string(CONN_STR)
+        live_table = TableClient.from_connection_string(CONN_STR, "LiveOpportunities")
+        paper_table = TableClient.from_connection_string(CONN_STR, "PaperTradingSignals")
+
+        for table in [live_table, paper_table]:
+            try:
+                table.create_table()
+            except Exception:
+                pass
+        try:
+            blob_service.create_container("market-snapshots")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"❌ Azure Initialization Failed: {e}")
+        return
+
+    # ══════════════ TIER 1: REAL EDGE ══════════════
+    # Engines fetch their own Kalshi markets via series_ticker (fastest method)
+    real_edge_ops = scan_real_edge()
+
+    # ── Discord Alerts (for high-conviction trades) ──
+    try:
+        notifier = DiscordNotifier()
+        if notifier.is_enabled():
+            notifier.send_alert(real_edge_ops, min_edge=30.0)
+    except Exception as e:
+        print(f"  ⚠️ Discord alert failed: {e}")
+
     # ══════════════ TIER 2: PAPER TRADING ══════════════
     print("\n🧪 Running Quant Engine (Paper Trading)...")
     snapshot_records, paper_ops = scan_quant_ml()
     print(f"  Found {len(paper_ops)} quant signals (EDUCATIONAL ONLY)")
 
+    # ── News Analysis & Arbitrage Discovery (PhD Milestone) ──
+    news_analyzer = NewsAnalyzer()
+    
     # ── Save snapshot to Blob ──
-    full_snapshot = {
-        "timestamp_utc": now.isoformat(),
-        "markets_analyzed": len(snapshot_records),
-        "live_opportunities": len(real_edge_ops),
-        "paper_signals": len(paper_ops),
-        "records": snapshot_records,
-    }
-    blob_name = f"snapshot_{now.strftime('%Y%m%d_%H%M%S')}.json"
-    blob_client = blob_service.get_blob_client(container="market-snapshots", blob=blob_name)
-    blob_client.upload_blob(json.dumps(full_snapshot, default=str), overwrite=True)
-    print(f"\n✅ Saved snapshot: {blob_name} ({len(snapshot_records)} markets)")
+    try:
+        full_snapshot = {
+            "timestamp_utc": now.isoformat(),
+            "markets_analyzed": len(snapshot_records),
+            "live_opportunities": len(real_edge_ops),
+            "paper_signals": len(paper_ops),
+            "records": snapshot_records,
+        }
+        blob_name = f"snapshot_{now.strftime('%Y%m%d_%H%M%S')}.json"
+        blob_client = blob_service.get_blob_client(container="market-snapshots", blob=blob_name)
+        blob_client.upload_blob(json.dumps(full_snapshot, default=str), overwrite=True)
+        print(f"\n✅ Saved snapshot: {blob_name} ({len(snapshot_records)} markets)")
+    except Exception as e:
+        print(f"  ⚠️ Failed to save snapshot: {e}")
 
     # ── Update LiveOpportunities table ──
     try:
-        for e in live_table.query_entities("PartitionKey eq 'Live'"):
+        # Clear old entities (PartitionKey eq 'Live')
+        entities = list(live_table.query_entities("PartitionKey eq 'Live'"))
+        for e in entities:
             live_table.delete_entity(e['PartitionKey'], e['RowKey'])
     except Exception:
         pass
 
     for opp in real_edge_ops:
         try:
+            # PhD Intelligence: Bayesian News Scrutiny (Lightweight)
+            news_res = news_analyzer.analyze_event_impact(
+                opp.get('market_ticker', ''), 
+                opp.get('market_title', ''), 
+                opp.get('model_probability', 50),
+                [opp.get('reasoning', '')] # Pass reasoning as context if no live headlines
+            )
+            
             row_key = opp.get('market_ticker', f"{opp.get('engine', 'UNK')}_{opp.get('asset', 'UNK')}_{now.strftime('%H%M%S')}")
             row_key = row_key.replace('/', '_').replace('\\', '_').replace('#', '_').replace('?', '_')
+            
             entity = {
                 "PartitionKey": "Live",
                 "RowKey": row_key,
@@ -301,6 +322,8 @@ def calculate_annualized_ev(edge_pct, expiration_str):
                 "Edge": float(opp.get('edge', 0)),
                 "Confidence": float(opp.get('confidence', 0)),
                 "Reasoning": str(opp.get('reasoning', ''))[:500],
+                "NewsSentiment": news_res.get('sentiment', 'Neutral'),
+                "NewsReasoning": news_res.get('reasoning', ''),
                 "DataSource": opp.get('data_source', ''),
                 "AIValidated": False,  # On-demand in UI
                 "KalshiUrl": opp.get('kalshi_url', ''),
@@ -309,20 +332,20 @@ def calculate_annualized_ev(edge_pct, expiration_str):
                 "Expiration": opp.get('expiration', ''),
                 "MarketPrice": float(opp.get('market_price', 0)),
                 "ModelProb": float(opp.get('model_probability', 0)),
-                "Spread": float(opp.get('spread', 5)), # Default to 5
+                "Spread": float(opp.get('spread', 5)),
                 "AnnualizedEV": calculate_annualized_ev(float(opp.get('edge', 0)), opp.get('expiration', ''))
             }
-            # Only save to Live if spread is reasonable (<20 cents, but we filter stricter in UI)
             if entity["Spread"] <= 20: 
                 live_table.create_entity(entity)
         except Exception as e:
             print(f"  ⚠️ Failed to save live op: {e}")
 
-    print(f"✅ Saved {len(real_edge_ops)} math-based opportunities to LiveOpportunities (AI on-demand in UI)")
+    print(f"✅ Saved {len(real_edge_ops)} math-based opportunities to LiveOpportunities")
 
     # ── Update PaperTradingSignals table ──
     try:
-        for e in paper_table.query_entities("PartitionKey eq 'Paper'"):
+        entities = list(paper_table.query_entities("PartitionKey eq 'Paper'"))
+        for e in entities:
             paper_table.delete_entity(e['PartitionKey'], e['RowKey'])
     except Exception:
         pass
@@ -334,7 +357,6 @@ def calculate_annualized_ev(edge_pct, expiration_str):
             print(f"  ⚠️ Failed to save paper op: {e}")
 
     print(f"✅ Saved {len(paper_ops)} quant signals to PaperTradingSignals")
-
     print(f"\n🏁 Scan complete at {datetime.now(timezone.utc).isoformat()}")
 
 

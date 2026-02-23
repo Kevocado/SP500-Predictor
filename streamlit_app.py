@@ -10,10 +10,37 @@ import numpy as np
 import os
 import json
 from datetime import datetime, timezone, timedelta
+import re
+from src.data_loader import get_macro_data
+from src.news_analyzer import NewsAnalyzer
+from src.microstructure_engine import MicrostructureEngine
+from src.predictit_engine import PredictItEngine
+from huggingface_hub import hf_hub_download
+
+# ─── AUTO-PULL MODELS FROM HF HUB ─────────────────────────────
+def ensure_models_exist():
+    """Milestone: Automated Sync. Pre-warms the Hugging Face cache for all active models."""
+    tickers = ["SPY", "QQQ", "BTC", "ETH"]
+    repo_id = "KevinSigey/Kalshi-LightGBM"
+    
+    for t in tickers:
+        m_file = f"models/lgbm_model_{t}.pkl"
+        f_file = f"models/features_{t}.pkl"
+        
+        for filename in [m_file, f_file]:
+            try:
+                # This downloads and caches it in ~/.cache/huggingface/hub/
+                # ensuring ultra-fast loading for quant_engine.py
+                hf_hub_download(repo_id=repo_id, filename=filename)
+            except Exception as e:
+                pass # Non-fatal, engines have their own fallback logic
+
+ensure_models_exist()
 
 with st.sidebar:
     st.markdown("---")
-    ui_mode = st.radio("Display Mode", ["High-Density Grid", "Visual Cards"], index=0)
+    # Category filter as requested
+    filter_category = st.multiselect("Focus Categories", ["Weather", "Macro", "Alpha", "Niche"], default=["Weather", "Macro", "Alpha", "Niche"])
 
 def parse_kalshi_ticker(ticker):
     """Translates a Kalshi ticker like KXHIGHNY-26FEB23-B33.5 into plain English."""
@@ -248,30 +275,63 @@ def render_grid(data, key_suffix):
 
     # Select columns
     final_cols = ['Asset', 'Market', 'Action', 'Edge', 'AnnualizedEV', 'MarketPrice', 'ModelProb', 'Spread', 'MarketTicker']
-    final_cols = [c for c in final_cols if c in df.columns]
-
-    # Native st.dataframe with column_config
-    st.dataframe(
-        df[final_cols],
-        column_config={
-            "Edge": st.column_config.NumberColumn("Edge %", format="%.1f%%", help="Mathematical edge vs Kalshi ask"),
-            "AnnualizedEV": st.column_config.NumberColumn("Ann. EV %", format="%.0f%%", help="Annualized Expected Value"),
-            "MarketPrice": st.column_config.NumberColumn("Price (¢)", format="%d¢"),
-            "ModelProb": st.column_config.ProgressColumn("Model Prob", min_value=0, max_value=100, format="%d%%"),
-            "Spread": st.column_config.NumberColumn("Spread", format="%d¢"),
-            "MarketTicker": st.column_config.TextColumn("Ticker"),
-            "Market": st.column_config.TextColumn("Market View", width="large")
-        },
-        hide_index=True,
-        use_container_width=True
-    )
     
-    # Quick select ticker for link (since st.dataframe selection is newer and requires a state key)
-    st.caption("Copy ticker and paste below for direct Kalshi link:")
-    selected_ticker = st.text_input(f"Enter Ticker to View on Kalshi ({key_suffix})", key=f"lookup_{key_suffix}")
-    if selected_ticker:
-        url = f"https://kalshi.com/markets/{selected_ticker.split('-')[0].lower()}"
-        st.link_button(f"Open {selected_ticker}", url)
+    # RENDER AS TILES (Rich Alpha Tiles)
+    cols = st.columns(2)
+    for i, (_, row) in enumerate(df.iterrows()):
+        col = cols[i % 2]
+        with col:
+            ticker = row.get('MarketTicker', 'Unknown')
+            # Fetch Microstructure (Whale) Info
+            ms = MicrostructureEngine()
+            skew_data = ms.analyze_skew(ticker)
+            whale_icon = "🐳" if skew_data.get('whale_detected') else ""
+            skew_val = skew_data.get('skew', 0)
+            
+            # Smart Entry Logic (🔥): Edge > 10% + Whale + News Alignment
+            edge_val = float(row.get('Edge', 0))
+            sentiment = row.get('NewsSentiment', 'Neutral')
+            action = row.get('Action', '')
+            
+            # Action alignment: Bullish news + BUY YES OR Bearish news + BUY NO
+            news_aligned = (sentiment == "Bullish" and "YES" in action) or (sentiment == "Bearish" and "NO" in action)
+            
+            is_smart_entry = (edge_val > 10) and skew_data.get('whale_detected') and news_aligned
+            smart_icon = "🔥 SMART ENTRY" if is_smart_entry else ""
+            
+            # Tile UI (Refined for Clarity)
+            edge_color = "#3fb950" if edge_val > 0 else "#f85149"
+            
+            st.markdown(f"""
+            <div class="quant-card" style="border-left: 5px solid {edge_color}; margin-bottom: 25px; position: relative;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div style="width: 75%;">
+                        <strong style="font-size: 1.15rem; color: #c9d1d9;">{row.get('Market', 'Unknown')}</strong><br>
+                        <div style="margin-top: 5px;">
+                            <span class="stat-pill">{row.get('Asset', 'Alpha')}</span>
+                            <span class="stat-pill" style="border-color: #3fb950; color: #3fb950!important;">{whale_icon} Depth Skew: {skew_val:+.0f}%</span>
+                            <span class="stat-pill" style="border-color: #f85149; color: #f85149!important; font-weight: bold;">{smart_icon}</span>
+                            <span style="font-size: 0.8rem; color: #8b949e; margin-left: 5px;">{sentiment if sentiment != 'Neutral' else ''}</span>
+                        </div>
+                    </div>
+                    <div style="text-align: right;">
+                        <span class="edge-positive" style="font-size: 1.5rem; color: {edge_color}!important;">{edge_val:+.1f}%</span><br>
+                        <span style="color: #8b949e; font-size: 0.85rem;">EV: {float(row.get('AnnualizedEV', 0)):.0f}% Ann.</span>
+                    </div>
+                </div>
+                <div style="margin-top: 15px; display: flex; gap: 15px; font-size: 0.95rem; color: #8b949e; border-top: 1px solid #30363d; padding-top: 12px;">
+                    <span>💵 <strong>{row.get('MarketPrice', 0)}¢</strong> Price</span>
+                    <span>🎯 Prob: <strong>{row.get('ModelProb', 0):.0f}%</strong></span>
+                    <span>↔️ Spread: <strong>{row.get('Spread', 0)}¢</strong></span>
+                </div>
+                <div style="margin-top: 15px;">
+                    <a href="https://kalshi.com/markets/{ticker.split('-')[0].lower()}" target="_blank" style="text-decoration: none; width: 100%;">
+                        <button style="background: linear-gradient(135deg, #238636 0%, #2ea043 100%) !important; color: white !important; border: none !important; padding: 12px 0; border-radius: 8px; cursor: pointer; font-size: 1rem; width: 100%; font-weight: bold; border: 1px solid rgba(255,255,255,0.1) !important; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">⚡ OPEN LIVE TRADE</button>
+                    </a>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    return
 
 st.set_page_config(
     page_title="Kalshi Edge Finder",
@@ -315,6 +375,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 live_opps, paper_opps, last_updated = fetch_opportunities()
+all_entities = live_opps + paper_opps
 
 weather_opps = [o for o in live_opps if o.get('Engine', '').lower() == 'weather']
 macro_opps = [o for o in live_opps if o.get('Engine', '').lower() == 'macro']
@@ -330,15 +391,45 @@ if st.button("🔄 Force Refresh", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
+# ─── MARKET HEAT GAUGE (PhD Integration) ───────────────────────────
+macro_data = get_macro_data()
+vix = macro_data.get('vix', 20)
+yc = macro_data.get('yield_curve', 0)
+
+# Calculate Heat Score (-100 to 100)
+# VIX > 20 is 'hot' (fear), VIX < 15 is 'cool' (calm)
+# Yield Curve < 0 is 'hot' (recession risk)
+heat_score = ((vix - 15) * 5) - (yc * 50) 
+heat_label = "FEAR" if heat_score > 30 else ("GREED" if heat_score < -30 else "NEUTRAL")
+heat_color = "#f85149" if heat_score > 30 else ("#3fb950" if heat_score < -30 else "#8b949e")
+
+st.markdown(f"""
+<div style="background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 15px; margin-bottom: 25px;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+            <span style="color: #8b949e; font-size: 0.9rem; text-transform: uppercase;">Live Market Sentiment</span><br>
+            <strong style="font-size: 1.8rem; color: {heat_color};">{heat_label}</strong>
+        </div>
+        <div style="text-align: right;">
+            <span style="color: #8b949e; font-size: 0.8rem;">VIX: {vix:.2f} | 10Y-2Y: {yc:.2f}</span><br>
+            <div style="width: 150px; height: 8px; background-color: #30363d; border-radius: 4px; margin-top: 5px;">
+                <div style="width: {min(max(heat_score + 50, 0), 100)}%; height: 100%; background-color: {heat_color}; border-radius: 4px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 st.markdown("---")
 
-# ─── 5-TAB LAYOUT ────────────────────────────────────────────────────
-tab_portfolio, tab_weather, tab_macro, tab_niche, tab_quant, tab_backtest, tab_help = st.tabs([
+# ─── 8-TAB LAYOUT ────────────────────────────────────────────────────
+tab_portfolio, tab_weather, tab_macro, tab_niche, tab_quant, tab_arbitrage, tab_backtest, tab_help = st.tabs([
     "📁 My Portfolio",
     "⛈️ Weather Arb",
     "🏛️ Macro/Fed",
     "✈️ Niche Alpha",
     "🧪 Quant Lab (Paper)",
+    "⚖️ Cross-Venue Arb",
     "📊 Backtesting",
     "🎓 Institutional Help"
 ])
@@ -456,19 +547,33 @@ with tab_portfolio:
 
                         # Check if our model has an edge on this position to get current price
                         model_info = edge_lookup.get(raw_ticker, {})
-                        current_cents = None
-                        unrealized_pnl = 0
                         
+                        # PRIORITY: (1) Live API price from portfolio summary, (2) Scanner price from edge_lookup
+                        current_cents = pos.get('current_price') # Already in cents from kalshi_portfolio.py
+                        if current_cents is None and model_info:
+                            current_cents = model_info['price'] * 100
+
+                        unrealized_pnl = 0
                         model_html = ""
+                        exit_html = ""
+                        if current_cents is not None:
+                            unrealized_pnl = ((current_cents - avg_cost_cents) * contracts) / 100
+
                         if model_info:
                             model_edge = model_info['edge']
                             model_action = model_info['action']
-                            current_cents = model_info['price'] * 100
-                            # Calculate real unrealized P&L
-                            unrealized_pnl = ((current_cents - avg_cost_cents) * contracts) / 100
-                            
                             edge_color = "#3fb950" if model_edge > 0 else "#f85149"
                             model_html = f'<span class="stat-pill" style="border-color: {edge_color}; color: {edge_color}!important;">Model: {model_action} ({model_edge:+.1f}%)</span>'
+                            
+                            # 🚨 Smart Exit Logic
+                            exit_reasons = []
+                            if model_edge < 2.0:
+                                exit_reasons.append(f"Decaying Edge ({model_edge:.1f}%)")
+                            if heat_label == "FEAR":
+                                exit_reasons.append("High Volatility / FEAR")
+                            if exit_reasons:
+                                exit_text = " + ".join(exit_reasons)
+                                exit_html = f'<div style="margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: rgba(248, 81, 73, 0.15); border: 1px solid #f85149; color: #f85149; font-size: 0.85rem; display: inline-block;">⚠️ <strong>SMART EXIT ALERT:</strong> {exit_text}</div>'
 
                         pnl_class = "edge-positive" if unrealized_pnl >= 0 else "edge-negative"
                         pnl_sign = "+" if unrealized_pnl >= 0 else ""
@@ -488,12 +593,14 @@ with tab_portfolio:
 
                         st.markdown(f"""
                         <div class="quant-card" style="{card_style}">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div>
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                <div style="width: 70%;">
                                     <strong style="color: #c9d1d9; font-size: 1.1rem;">{readable_ticker}</strong>
                                     <div style="color: #8b949e; font-size: 0.8rem; margin-bottom: 6px;">{raw_ticker}</div>
                                     <span class="stat-pill">{contracts} contracts</span>
                                     {model_html}
+                                    <br>
+                                    {exit_html}
                                 </div>
                                 <div style="text-align: right;">
                                     <span class="{pnl_class}" style="font-size: 1.2rem; font-weight: bold;">{pnl_display}</span>
@@ -560,9 +667,17 @@ with tab_portfolio:
 
 
 def sort_and_filter_opps(opps, tab_key):
-    """Render sorting and date filter controls. Returns filtered list."""
+    """Render sorting and date filter controls. Returns filtered list. Safe against None values."""
+    if opps is None:
+        return []
+    if not isinstance(opps, list):
+        try:
+            opps = list(opps)
+        except Exception:
+            return []
+            
     if not opps:
-        return opps
+        return []
 
     filter_col, sort_col = st.columns([1, 1])
 
@@ -682,205 +797,244 @@ def render_live_card(sig, card_index):
 # ═══════════════════════════════════════════════════════════════
 # TAB 1: WEATHER ARBITRAGE
 # ═══════════════════════════════════════════════════════════════
-with tab_weather:
-    col_w1, col_w2 = st.columns([3, 1])
-    
-    with col_w1:
-        st.markdown("### ⛈️ Weather Arbitrage — NWS Official Data")
-        st.caption("NWS is the settlement source. Expired same-day markets are auto-filtered. "
-                   "Click 🤖 AI Validate for Gemini's risk analysis.")
+    try:
+        col_w1, col_w2 = st.columns([3, 1])
+        
+        with col_w1:
+            st.markdown("### ⛈️ Weather Arbitrage — NWS Official Data")
+            st.caption("NWS is the settlement source. Expired same-day markets are auto-filtered. "
+                       "Click 🤖 AI Validate for Gemini's risk analysis.")
 
-        filtered_weather = sort_and_filter_opps(list(weather_opps), "weather")
+            filtered_weather = sort_and_filter_opps(list(weather_opps), "weather")
 
-        if ui_mode == "High-Density Grid":
-            render_grid(filtered_weather, "weather")
-        else:
-            if filtered_weather:
-                st.markdown(f"**Showing {len(filtered_weather)} opportunities**")
-                for i, sig in enumerate(filtered_weather):
-                    render_live_card(sig, f"weather_{i}")
+            if "Weather" in filter_category:
+                render_grid(filtered_weather, "weather")
             else:
-                st.info("No weather opportunities found. Markets past expiry are filtered out. Scanner runs every 30 min.")
-            
-    with col_w2:
-        st.markdown("#### 📡 Live NWS Forecast")
-        st.caption("Official data from weather.gov")
-        try:
-            from scripts.engines.weather_engine import WeatherEngine
-            we = WeatherEngine()
-            forecasts = we.get_all_forecasts()
-            
-            for city, dates in forecasts.items():
-                city_name = {"NYC": "New York", "CHI": "Chicago", "MIA": "Miami"}.get(city, city)
-                with st.expander(f"📍 {city_name}", expanded=True):
-                    # Show today and tomorrow
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    tmrw_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-                    
-                    if today_str in dates:
-                        st.markdown(f"**Today:** High {dates[today_str]}°F")
-                    if tmrw_str in dates:
-                        st.markdown(f"**Tomorrow:** High {dates[tmrw_str]}°F")
-        except Exception as e:
-            st.caption("Unable to load NWS forecast at this time.")
+                st.info("Weather category is disabled in sidebar.")
+                
+        with col_w2:
+            st.markdown("#### 📡 Live NWS Forecast")
+            st.caption("Official data from weather.gov")
+            try:
+                from scripts.engines.weather_engine import WeatherEngine
+                we = WeatherEngine()
+                forecasts = we.get_all_forecasts()
+                
+                for city, dates in forecasts.items():
+                    city_name = {"NYC": "New York", "CHI": "Chicago", "MIA": "Miami"}.get(city, city)
+                    with st.expander(f"📍 {city_name}", expanded=True):
+                        # Show today and tomorrow
+                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        tmrw_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                        
+                        if today_str in dates:
+                            st.markdown(f"**Today:** High {dates[today_str]}°F")
+                        if tmrw_str in dates:
+                            st.markdown(f"**Tomorrow:** High {dates[tmrw_str]}°F")
+            except Exception as e:
+                st.caption("Unable to load NWS forecast at this time.")
+    except Exception as e:
+        st.error(f"Weather Tab Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 2: MACRO/FED
 # ═══════════════════════════════════════════════════════════════
 with tab_macro:
-    st.markdown("### 🏛️ Macro/Fed — FRED Economic Data")
-    st.caption("FRED-powered predictions. Sort by date to find near-term settlements.")
+    try:
+        st.markdown("### 🏛️ Macro/Fed — FRED Economic Data")
+        st.caption("FRED-powered predictions. Sort by date to find near-term settlements.")
 
-    filtered_macro = sort_and_filter_opps(list(macro_opps), "macro")
+        filtered_macro = sort_and_filter_opps(list(macro_opps), "macro")
 
-    if ui_mode == "High-Density Grid":
-        render_grid(filtered_macro, "macro")
-    else:
-        if filtered_macro:
-            st.markdown(f"**Showing {len(filtered_macro)} opportunities**")
-            for i, sig in enumerate(filtered_macro):
-                render_live_card(sig, f"macro_{i}")
+        if "Macro" in filter_category:
+            render_grid(filtered_macro, "macro")
         else:
-            st.info("No macro opportunities found. Scanner runs every 30 minutes.")
+            st.info("Macro category is disabled in sidebar.")
+    except Exception as e:
+        st.error(f"Macro Tab Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 3: NICHE ALPHA (TSA / EIA)
 # ═══════════════════════════════════════════════════════════════
 with tab_niche:
-    st.markdown("### ✈️ Niche Alpha — TSA & Energy Storage")
-    st.caption("Exploiting alpha in travel volumes and energy inventory markets.")
-    
-    filtered_niche = sort_and_filter_opps(list(niche_opps), "niche")
-    
-    if ui_mode == "High-Density Grid":
-        render_grid(filtered_niche, "niche")
-    else:
-        if filtered_niche:
-            st.markdown(f"**Showing {len(filtered_niche)} niche opportunities**")
-            for i, sig in enumerate(filtered_niche):
-                render_live_card(sig, f"niche_{i}")
+    try:
+        st.markdown("### ✈️ Niche Alpha — TSA & Energy Storage")
+        st.caption("Exploiting alpha in travel volumes and energy inventory markets.")
+        
+        filtered_niche = sort_and_filter_opps(list(niche_opps), "niche")
+        
+        if "Niche" in filter_category:
+            render_grid(filtered_niche, "niche")
         else:
-            st.info("No niche (TSA/EIA) opportunities found.")
+            st.info("Niche Alpha category is disabled in sidebar.")
+    except Exception as e:
+        st.error(f"Niche Tab Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 4: QUANT LAB (PAPER TRADING)
 # ═══════════════════════════════════════════════════════════════
 with tab_quant:
-    st.warning("""
-    ⚠️ **PAPER TRADING ONLY - EDUCATIONAL PROJECT**
+    try:
+        st.warning("""
+        ⚠️ **PAPER TRADING ONLY - EDUCATIONAL PROJECT**
 
-    This tab predicts SPX/Nasdaq/BTC/ETH prices using LightGBM.
+        This tab predicts SPX/Nasdaq/BTC/ETH prices using LightGBM.
 
-    **Why this is NOT real edge:**
-    - Delayed data vs HFT firms with microsecond latency
-    - ~50% directional accuracy = coin flip
-    - Expected ROI: 0-1% after fees
+        **Why this is NOT real edge:**
+        - Delayed data vs HFT firms with microsecond latency
+        - ~50% directional accuracy = coin flip
+        - Expected ROI: 0-1% after fees
 
-    **DO NOT BET REAL MONEY ON THESE SIGNALS.**
-    """)
+        **DO NOT BET REAL MONEY ON THESE SIGNALS.**
+        """)
 
-    st.markdown("### 🧪 SPX/BTC Algorithmic Predictions (Paper Only)")
+        st.markdown("### 🧪 SPX/BTC Algorithmic Predictions (Paper Only)")
 
-    filtered_paper = sort_and_filter_opps(list(paper_opps), "paper")
+        filtered_paper = sort_and_filter_opps(list(paper_opps), "paper")
 
-    if ui_mode == "High-Density Grid":
-        render_grid(filtered_paper, "paper")
-    else:
-        if filtered_paper:
-            for sig in filtered_paper:
-                edge_val = float(sig.get('Edge', 0))
-                edge_class = "edge-positive" if edge_val > 0 else "edge-negative"
-                edge_sign = "+" if edge_val > 0 else ""
-                kelly_val = float(sig.get('KellySuggestion', 0))
-
-                st.markdown(f"""
-                <div class="quant-card" style="border-left: 4px solid #a371f7;">
-                    <div style="display: flex; justify-content: space-between;">
-                        <div>
-                            <strong style="color: #c9d1d9; font-size: 1.05rem;">{sig.get('Market', 'Unknown')}</strong>
-                            <span class="stat-pill">{sig.get('Asset', 'Crypto/Equities')}</span>
-                            <span class="stat-pill" style="border-color: #a371f7; color: #a371f7!important;">PAPER ONLY</span>
-                        </div>
-                        <div style="text-align: right;">
-                            <span class="{edge_class}" style="font-size: 1.3rem;">{edge_sign}{edge_val:.1f}%</span>
-                            <br><span style="color: #8b949e; font-size: 0.8rem;">Kelly: ${kelly_val:.2f}</span>
-                        </div>
-                    </div>
-                    <div style="margin-top: 8px; font-size: 0.85rem; color: #8b949e; display: flex; gap: 16px;">
-                        <span>📊 ${float(sig.get('CurrentPrice', 0)):,.2f}</span>
-                        <span>🎯 ${float(sig.get('ModelPred', 0)):,.2f}</span>
-                        <span>⚡ {sig.get('Strike', '0')}</span>
-                        <span>σ: {float(sig.get('Volatility', 0)):.5f}</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+        if "Alpha" in filter_category:
+            render_grid(filtered_paper, "paper")
         else:
-            st.info("No paper signals found. Models found no edge >5%.")
+            st.info("Quant Alpha category is disabled in sidebar.")
+    except Exception as e:
+        st.error(f"Quant Tab Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
-# TAB 5: INSTITUTIONAL HELP
+# TAB 5: INSTITUTIONAL GLOSSARY (HELP)
 # ═══════════════════════════════════════════════════════════════
 with tab_help:
-    st.markdown("### 🎓 Quant Trading Help & Methodology")
-    st.info("This dashboard uses Institutional-Grade Quant metrics. Here is what they mean:")
+    st.markdown("### 🏛️ The Institutional Quant Glossary")
+    st.write("Professional trading involves specific terminology. This page explains every term used in this platform.")
     
-    with st.expander("📈 Core Alpha Metrics", expanded=True):
-        st.markdown("""
-        - **Edge %**: The difference between our Model's Probability and the Market Price. If our model says 70% and the price is 50¢, our Edge is **20%**.
-        - **Annualized EV (Expected Value)**: This measures capital efficiency. It's your Edge project over a full year. 
-          - *Formula*: `(Edge / Days to Expiry) * 365`. 
-          - *Why*: A 5% edge that resolves in 1 day is better than a 20% edge that takes 6 months.
-        - **Kelly Suggestion**: A sizing formula that tells you what % of your bankroll to wager to maximize long-term growth.
-        """)
-        
-    with st.expander("🛡️ Risk Management", expanded=True):
-        st.markdown("""
-        - **Spread Check**: The 'Spread' is the gap between the Buy and Sell price. A spread > 5¢ often makes a trade unprofitable, as you are immediately 'down' 5% upon entry. We filter these out.
-        - **Confidence Gate (15-85%)**: We avoid 'sure things' (99%) and 'long shots' (1%). The most profitable arbitrage happens in the middle ground where models have high conviction but the market is still undecided.
-        """)
+    st.markdown("---")
+    
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        st.markdown("#### 📈 Alpha & Math")
+        with st.expander("⭐ Edge %", expanded=True):
+            st.write("""
+            **What it is:** The difference between our model's predicted probability and the market's current price.
+            - *Example*: If our model says a 70% chance of 'YES' and the price is 50¢ (50%), we have a **20% Edge**.
+            - *Significance*: This is your profit margin. We generally only trade when Edge > 5%.
+            """)
+            
+        with st.expander("⏳ Annualized EV", expanded=True):
+            st.write("""
+            **What it is:** Expected Value projected over a 365-day period.
+            - *Formula*: `(Edge / Days to Expiration) * 365`.
+            - *Significance*: Helps you compare a small profit that resolves today vs. a large profit that takes months. It prioritizes capital turnover.
+            """)
+            
+        with st.expander("⚖️ Kelly Criterion", expanded=True):
+            st.write("""
+            **What it is:** A mathematical formula for optimal bet sizing.
+            - *Significance*: It tells you exactly what % of your bankroll to risk. It balances the desire to grow your account with the need to avoid 'going broke' from a single bad trade.
+            """)
 
-    with st.expander("🚀 Model Performance & Future Alpha", expanded=True):
+    with col_b:
+        st.markdown("#### 🛡️ Risk & Execution")
+        with st.expander("↔️ Bid-Ask Spread", expanded=True):
+            st.write("""
+            **What it is:** The gap between the best 'BUY' price (Ask) and the best 'SELL' price (Bid).
+            - *The Trap*: If you buy at 60¢ and the bid is 40¢, you are instantly down 20¢. 
+            - *Our Rule*: We highlight markets with spreads < 5¢ to ensure you can exit the trade profitably.
+            """)
+            
+        with st.expander("🚧 Confidence Gate (15-85%)", expanded=True):
+            st.write("""
+            **What it is:** A filter that hides extreme outliers.
+            - *Why*: Prediction markets are most 'efficient' (and profitable) when there is actual debate. When a market is at 99%, there is no remaining profit; when it's at 1%, it's usually a lottery ticket.
+            """)
+            
+        with st.expander("🧪 Paper Trading", expanded=True):
+            st.write("""
+            **What it is:** Trading with virtual money for educational and testing purposes.
+            - *Note*: Our SPX/BTC models are currently in 'Paper Only' mode to prevent real-money losses while we tune the LightGBM architecture.
+            """)
+
+    st.markdown("---")
+    st.caption("PhD Level Quantitative Infrastructure • Developed for Institutional Performance")
+
+# ═══════════════════════════════════════════════════════════════
+# TAB: ARBITRAGE
+# ═══════════════════════════════════════════════════════════════
+with tab_arbitrage:
+    try:
+        st.markdown("### ⚖️ Cross-Venue Arbitrage (Kalshi vs PredictIt)")
         st.markdown("""
-        **How these changes increase performance:**
-        1. **Data Freshness**: By moving to Alpaca-py and specialized scrapers (TSA/EIA), we minimize 'latency leak'—the risk of trading on old data that the market has already priced in.
-        2. **Noise Reduction**: Advanced filtering (Spread/EV) ensures we only see high-conviction, liquid trades.
-        
-        **Future Expansion (PhD Horizons):**
-        - **Bayesian News Updates**: Real-time NLP analysis of FOMC transcripts and travel news.
-        - **Cross-Exchange Arb**: Linking with Polymarket/PredictIt to find price discrepancies for the *same* event.
-        - **Microstructure Analysis**: Watching Kalshi's Order Book for institutional 'whale' activity.
+        This lab monitors for price discrepancies between Kalshi (cents) and PredictIt ($/cents).
+        *   **Arbitrage**: Delta > 8% (High Profit Opportunity)
+        *   **Alignment**: Delta < 3% (Market Consensus)
         """)
+        
+        if st.button("🔍 Scan for PredictIt Discrepancies", key="scan_arb_pi"):
+            with st.spinner("Analyzing multi-venue flow..."):
+                pi_engine = PredictItEngine()
+                # Ensure all_entities is defined (already handled at top of script)
+                alerts = pi_engine.get_arbitrage_alerts(all_entities)
+                
+                if not alerts:
+                    st.info("No significant price discrepancies found across major pairs.")
+                else:
+                    for a in alerts:
+                        atype = a.get('Type', 'Alignment')
+                        color = "#3fb950" if atype == "Arbitrage" else "#8b949e"
+                        
+                        st.markdown(f"""
+                        <div class="quant-card" style="border-left: 5px solid {color}; margin-bottom: 20px;">
+                            <div style="display: flex; justify-content: space-between;">
+                                <div>
+                                    <strong style="color: #c9d1d9;">{a['MarketTicker']}</strong><br>
+                                    <span style="font-size: 0.85rem; color: #8b949e;">{a['PredictIt_Market']} ({a['PredictIt_Contract']})</span>
+                                </div>
+                                <div style="text-align: right;">
+                                    <span style="font-size: 1.25rem; font-weight: bold; color: {color};">{a['Delta']:+.1f}% Delta</span><br>
+                                    <span class="stat-pill">{atype}</span>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 20px; margin-top: 10px; font-size: 0.95rem;">
+                                <span>🏛️ Kalshi: <strong>{a['Kalshi_Price']:.0f}¢</strong></span>
+                                <span>⚖️ PredictIt: <strong>{a['PI_Price']:.0f}¢</strong></span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Arbitrage Tab Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 4: BACKTESTING
 # ═══════════════════════════════════════════════════════════════
 with tab_backtest:
-    st.markdown("### 📊 Backtesting — Engine Performance")
+    try:
+        st.markdown("### 📊 Backtesting — Engine Performance")
 
-    bt_weather, bt_macro, bt_quant = st.tabs([
-        "⛈️ Weather", "🏛️ Macro/Fed", "🧪 Quant ML"
-    ])
+        bt_weather, bt_macro, bt_quant = st.tabs([
+            "⛈️ Weather", "🏛️ Macro/Fed", "🧪 Quant ML"
+        ])
 
-    with bt_weather:
-        st.markdown("#### ⛈️ NWS Temperature Prediction Accuracy")
-        snapshots = fetch_backtest_snapshots()
-        weather_records = [{'timestamp': s.get('timestamp_utc', ''),
-                            'live_opps': s.get('live_opportunities', 0),
-                            'total': s.get('markets_analyzed', 0)} for s in snapshots]
-        if weather_records:
-            df = pd.DataFrame(weather_records)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            df = df.dropna(subset=['timestamp']).sort_values('timestamp')
-            if len(df) > 1:
-                st.line_chart(df.set_index('timestamp')['live_opps'], use_container_width=True)
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Scans", len(df))
-                c2.metric("Avg Opps", f"{df['live_opps'].mean():.0f}")
-                c3.metric("Peak", int(df['live_opps'].max()))
+        with bt_weather:
+            st.markdown("#### ⛈️ NWS Temperature Prediction Accuracy")
+            snapshots = fetch_backtest_snapshots()
+            weather_records = [{'timestamp': s.get('timestamp_utc', ''),
+                                'live_opps': s.get('live_opportunities', 0),
+                                'total': s.get('markets_analyzed', 0)} for s in snapshots]
+            if weather_records:
+                df = pd.DataFrame(weather_records)
+                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+                df = df.dropna(subset=['timestamp']).sort_values('timestamp')
+                if len(df) > 1:
+                    st.line_chart(df.set_index('timestamp')['live_opps'], use_container_width=True)
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Scans", len(df))
+                    c2.metric("Avg Opps", f"{df['live_opps'].mean():.0f}")
+                    c3.metric("Peak", int(df['live_opps'].max()))
+                else:
+                    st.info("Need more snapshots. Run scanner a few more times.")
             else:
-                st.info("Need more snapshots. Run scanner a few more times.")
-        else:
-            st.info("No snapshots yet. Run the background scanner.")
+                st.info("No snapshots yet. Run the background scanner.")
+    except Exception as e:
+        st.error(f"Backtesting Tab Error: {e}")
 
     with bt_macro:
         st.markdown("#### 🏛️ FRED Economic History")
@@ -926,11 +1080,12 @@ with tab_backtest:
                 result = simulate_backtest(logs_df, bankroll=bankroll, min_edge=min_edge)
                 m = result['metrics']
                 a = result['accuracy']
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Trades", m['total_trades'])
                 m2.metric("Win Rate", f"{m['win_rate']}%")
                 m3.metric("Return", f"{m['total_return']}%")
                 m4.metric("Sharpe", m['sharpe'])
+                m5.metric("Max DD", f"-{m['max_drawdown']}%")
                 if result['equity_curve']:
                     eq = pd.DataFrame(result['equity_curve'], columns=['ts', 'eq'])
                     eq['ts'] = pd.to_datetime(eq['ts'], errors='coerce')

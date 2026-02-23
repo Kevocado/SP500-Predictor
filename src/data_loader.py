@@ -16,6 +16,23 @@ SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 crypto_client = CryptoHistoricalDataClient(API_KEY, SECRET_KEY)
 
+def get_macro_data():
+    """Fetches VIX and 10Y-2Y Yield Curve data from FRED."""
+    from fredapi import Fred
+    fred_key = os.getenv("FRED_API_KEY")
+    if not fred_key:
+        return {"vix": 20, "yield_curve": 0} # Fallback
+    
+    fred = Fred(api_key=fred_key)
+    try:
+        # VIX Index
+        vix = fred.get_series('VIXCLS').iloc[-1]
+        # 10-Year vs 2-Year Treasury Yield Spread (Recession Indicator)
+        yc = fred.get_series('T10Y2Y').iloc[-1]
+        return {"vix": vix, "yield_curve": yc}
+    except Exception:
+        return {"vix": 20, "yield_curve": 0}
+
 def fetch_data(ticker="SPY", period="1mo", interval="1m"):
     """
     Fetches intraday data for the given ticker using Alpaca.
