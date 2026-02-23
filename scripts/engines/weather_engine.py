@@ -62,6 +62,15 @@ class WeatherEngine:
             print(f"    ⚠️ NWS fetch error for {city}: {e}")
             return {}
 
+    def get_all_forecasts(self):
+        """Helper for the UI to fetch all city forecasts at once."""
+        forecasts = {}
+        for city in self.cities:
+            highs = self.get_nws_forecast(city)
+            if highs:
+                forecasts[city] = highs
+        return forecasts
+
     def find_opportunities(self, kalshi_markets=None):
         """
         Compare NWS forecasts to Kalshi temperature markets.

@@ -317,7 +317,7 @@ def render_grid(data, key_suffix, empty_msg="No matching opportunities found."):
                         </div>
                     </div>
                     <div style="text-align: right;">
-                        <span class="edge-positive" style="font-size: 1.5rem; color: {edge_color}!important;">{edge_emoji} {edge_val:+.1f}%</span><br>
+                        <span class="edge-positive" style="font-size: 1.5rem; color: {edge_color}!important;">{edge_emoji} EV{'+' if edge_val > 0 else ''}{edge_val:.1f}%</span><br>
                         <span style="color: #8b949e; font-size: 0.85rem;">EV: {float(row.get('AnnualizedEV', 0)):.0f}% Ann.</span>
                     </div>
                 </div>
@@ -371,8 +371,8 @@ st.markdown("""
 # ─── HERO HEADER ─────────────────────────────────────────────────────
 st.markdown("""
 <div class="hero-header">
-<h1>⛈️ Kalshi Edge Finder</h1>
-<p>Weather Arbitrage • FRED Economics • On-Demand AI Validation</p>
+    <h1>⛈️ Kalshi Edge Finder</h1>
+    <p>Weather Arbitrage • FRED Economics • Algorithmic Prediction</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -429,13 +429,10 @@ st.markdown(f"""
 
 st.markdown("---")
 
-# ─── 8-TAB LAYOUT ────────────────────────────────────────────────────
-tab_portfolio, tab_weather, tab_macro, tab_niche, tab_quant, tab_arbitrage, tab_backtest, tab_help = st.tabs([
+# ─── TAB LAYOUT ────────────────────────────────────────────────────
+tab_portfolio, tab_screener, tab_arbitrage, tab_backtest, tab_help = st.tabs([
     "📁 My Portfolio",
-    "⛈️ Weather Arb",
-    "🏛️ Macro/Fed",
-    "✈️ Niche Alpha",
-    "🧪 Quant Lab (Paper)",
+    "⚡ Live Screener",
     "⚖️ Cross-Venue Arb",
     "📊 Backtesting",
     "🎓 Institutional Help"
@@ -797,109 +794,86 @@ def render_live_card(sig, card_index):
 
 
 # ═══════════════════════════════════════════════════════════════
-# TAB 1: WEATHER ARBITRAGE
+# TAB 1: LIVE SCREENER (Unified View)
 # ═══════════════════════════════════════════════════════════════
-    try:
-        col_w1, col_w2 = st.columns([3, 1])
-        
-        with col_w1:
-            st.markdown("### ⛈️ Weather Arbitrage — NWS Official Data")
-            st.caption("NWS is the settlement source. Expired same-day markets are auto-filtered. "
-                       "Click 🤖 AI Validate for Gemini's risk analysis.")
+with tab_screener:
+    st.markdown("### ⚡ Live Market Screener")
+    st.caption("Unified view of all active algorithmic trading opportunities.")
 
-            filtered_weather = sort_and_filter_opps(list(weather_opps), "weather")
-
-            if "Weather" in filter_category:
+    # --- WEATHER ARBITRAGE ---
+    if "Weather" in filter_category:
+        st.markdown("---")
+        try:
+            col_w1, col_w2 = st.columns([3, 1])
+            with col_w1:
+                st.markdown("#### ⛈️ Weather Arbitrage Opportunities")
+                st.caption("NWS is the settlement source. Expired same-day markets are auto-filtered.")
+                filtered_weather = sort_and_filter_opps(list(weather_opps), "weather")
                 render_grid(filtered_weather, "weather", empty_msg="🌤️ No weather opportunities match your filters. Try adjusting Min Edge % or Max Spread.")
-            else:
-                st.info("Weather category is disabled in sidebar.")
-                
-        with col_w2:
-            st.markdown("#### 📡 Live NWS Forecast")
-            st.caption("Official data from weather.gov")
-            try:
-                from scripts.engines.weather_engine import WeatherEngine
-                we = WeatherEngine()
-                forecasts = we.get_all_forecasts()
-                
-                for city, dates in forecasts.items():
-                    city_name = {"NYC": "New York", "CHI": "Chicago", "MIA": "Miami"}.get(city, city)
-                    with st.expander(f"📍 {city_name}", expanded=True):
-                        # Show today and tomorrow
-                        today_str = datetime.now().strftime("%Y-%m-%d")
-                        tmrw_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-                        
-                        if today_str in dates:
-                            st.markdown(f"**Today:** High {dates[today_str]}°F")
-                        if tmrw_str in dates:
-                            st.markdown(f"**Tomorrow:** High {dates[tmrw_str]}°F")
-            except Exception as e:
-                st.caption("Unable to load NWS forecast at this time.")
-    except Exception as e:
-        st.error(f"Weather Tab Error: {e}")
+            with col_w2:
+                st.markdown("##### 📡 Live NWS Forecast")
+                st.caption("Official data from weather.gov")
+                try:
+                    from scripts.engines.weather_engine import WeatherEngine
+                    we = WeatherEngine()
+                    forecasts = we.get_all_forecasts()
+                    for city, dates in forecasts.items():
+                        city_name = {"NYC": "New York", "CHI": "Chicago", "MIA": "Miami"}.get(city, city)
+                        with st.expander(f"📍 {city_name}", expanded=True):
+                            today_str = datetime.now().strftime("%Y-%m-%d")
+                            tmrw_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                            if today_str in dates:
+                                st.markdown(f"**Today:** High {dates[today_str]}°F")
+                            if tmrw_str in dates:
+                                st.markdown(f"**Tomorrow:** High {dates[tmrw_str]}°F")
+                except Exception as e:
+                    st.caption("Unable to load NWS forecast at this time.")
+        except Exception as e:
+            st.error(f"Weather Engine Error: {e}")
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 2: MACRO/FED
-# ═══════════════════════════════════════════════════════════════
-with tab_macro:
-    try:
-        st.markdown("### 🏛️ Macro/Fed — FRED Economic Data")
-        st.caption("FRED-powered predictions. Sort by date to find near-term settlements.")
-
-        filtered_macro = sort_and_filter_opps(list(macro_opps), "macro")
-
-        if "Macro" in filter_category:
+    # --- MACRO/FED ---
+    if "Macro" in filter_category:
+        st.markdown("---")
+        try:
+            st.markdown("#### 🏛️ Macro/Fed Opportunities")
+            st.caption("FRED-powered predictions. Sort by date to find near-term settlements.")
+            filtered_macro = sort_and_filter_opps(list(macro_opps), "macro")
             render_grid(filtered_macro, "macro", empty_msg="🏛️ No macroeconomic events (Fed/CPI) match your filters.")
-        else:
-            st.info("Macro category is disabled in sidebar.")
-    except Exception as e:
-        st.error(f"Macro Tab Error: {e}")
+        except Exception as e:
+            st.error(f"Macro Engine Error: {e}")
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 3: NICHE ALPHA (TSA / EIA)
-# ═══════════════════════════════════════════════════════════════
-with tab_niche:
-    try:
-        st.markdown("### ✈️ Niche Alpha — TSA & Energy Storage")
-        st.caption("Exploiting alpha in travel volumes and energy inventory markets.")
-        
-        filtered_niche = sort_and_filter_opps(list(niche_opps), "niche")
-        
-        if "Niche" in filter_category:
+    # --- NICHE ALPHA ---
+    if "Niche" in filter_category:
+        st.markdown("---")
+        try:
+            st.markdown("#### ✈️ Niche Alpha Opportunities")
+            st.caption("Exploiting alpha in travel volumes and energy inventory markets.")
+            filtered_niche = sort_and_filter_opps(list(niche_opps), "niche")
             render_grid(filtered_niche, "niche", empty_msg="✈️ No alternative data alpha (TSA/EIA) matches your filters.")
-        else:
-            st.info("Niche Alpha category is disabled in sidebar.")
-    except Exception as e:
-        st.error(f"Niche Tab Error: {e}")
+        except Exception as e:
+            st.error(f"Niche Engine Error: {e}")
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 4: QUANT LAB (PAPER TRADING)
-# ═══════════════════════════════════════════════════════════════
-with tab_quant:
-    try:
-        st.warning("""
-        ⚠️ **PAPER TRADING ONLY - EDUCATIONAL PROJECT**
+    # --- QUANT LAB ---
+    if "Alpha" in filter_category:
+        st.markdown("---")
+        try:
+            st.markdown("#### 🧪 Quant Lab Predictions (Paper Only)")
+            st.warning("""
+            ⚠️ **PAPER TRADING ONLY - EDUCATIONAL PROJECT**
 
-        This tab predicts SPX/Nasdaq/BTC/ETH prices using LightGBM.
+            This section predicts SPX/Nasdaq/BTC/ETH prices using LightGBM.
 
-        **Why this is NOT real edge:**
-        - Delayed data vs HFT firms with microsecond latency
-        - ~50% directional accuracy = coin flip
-        - Expected ROI: 0-1% after fees
+            **Why this is NOT real edge:**
+            - Delayed data vs HFT firms with microsecond latency
+            - ~50% directional accuracy = coin flip
+            - Expected ROI: 0-1% after fees
 
-        **DO NOT BET REAL MONEY ON THESE SIGNALS.**
-        """)
-
-        st.markdown("### 🧪 SPX/BTC Algorithmic Predictions (Paper Only)")
-
-        filtered_paper = sort_and_filter_opps(list(paper_opps), "paper")
-
-        if "Alpha" in filter_category:
+            **DO NOT BET REAL MONEY ON THESE SIGNALS.**
+            """)
+            filtered_paper = sort_and_filter_opps(list(paper_opps), "paper")
             render_grid(filtered_paper, "paper", empty_msg="🧪 No quantitative signals match your active risk filters.")
-        else:
-            st.info("Quant Alpha category is disabled in sidebar.")
-    except Exception as e:
-        st.error(f"Quant Tab Error: {e}")
+        except Exception as e:
+            st.error(f"Quant Engine Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 5: INSTITUTIONAL GLOSSARY (HELP)

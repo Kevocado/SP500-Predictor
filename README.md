@@ -34,11 +34,12 @@ pinned: false
 
 ## 🏗 Architecture
 
-**Frontend:** Streamlit web app
+**Frontend:** Streamlit web app (default port 8501)
 **Backend:** Python 3.9+
 **Scanner:** Background terminal process (runs independently via cron or daemon)
-**Storage:** `data/` local cache & remote Hugging Face Model Hub
+**Storage:** Azure Table Storage & Hugging Face Model Hub
 **APIs:** Kalshi (Markets), FRED (Macro), Alpaca (Paper Data)
+**Data Flow:** Scanner → Azure Storage → Streamlit reads cache → UI renders
 
 ## 📂 Project Structure
 

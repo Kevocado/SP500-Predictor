@@ -41,8 +41,8 @@ class MicrostructureEngine:
             return {"skew": 0, "whale_detected": False, "signal": "Neutral"}
 
         ob = book['orderbook']
-        yes_orders = ob.get('yes', [])
-        no_orders = ob.get('no', [])
+        yes_orders = ob.get('yes') or []
+        no_orders = ob.get('no') or []
 
         # Sum of quantity * price to get total dollar depth
         yes_depth = sum(int(o[0]) * int(o[1]) for o in yes_orders)
