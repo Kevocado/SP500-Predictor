@@ -23,6 +23,8 @@ from azure.storage.blob import BlobServiceClient
 
 from scripts.engines.weather_engine import WeatherEngine
 from scripts.engines.macro_engine import MacroEngine
+from scripts.engines.tsa_engine import TSAEngine
+from scripts.engines.eia_engine import EIAEngine
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features
 from src.discord_notifier import DiscordNotifier
@@ -78,6 +80,26 @@ def scan_real_edge():
         all_ops.extend(macro_ops)
     except Exception as e:
         print(f"  ⚠️ Macro Engine failed: {e}")
+
+    # ── TSA Travel Engine (TSA Passenger Volumes) ──
+    print("\n✈️ Running TSA Engine...")
+    try:
+        tsa_engine = TSAEngine()
+        tsa_ops = tsa_engine.find_opportunities()
+        print(f"  Found {len(tsa_ops)} TSA opportunities")
+        all_ops.extend(tsa_ops)
+    except Exception as e:
+        print(f"  ⚠️ TSA Engine failed: {e}")
+
+    # ── EIA Energy Engine (Natural Gas / Crude Storage) ──
+    print("\n⛽ Running EIA Engine...")
+    try:
+        eia_engine = EIAEngine()
+        eia_ops = eia_engine.find_opportunities()
+        print(f"  Found {len(eia_ops)} EIA opportunities")
+        all_ops.extend(eia_ops)
+    except Exception as e:
+        print(f"  ⚠️ EIA Engine failed: {e}")
 
     print(f"\n📊 Total real-edge opportunities: {len(all_ops)} (AI validation available on-demand in UI)")
     return all_ops
@@ -226,6 +248,20 @@ def run_scan():
     except Exception as e:
         print(f"  ⚠️ Discord alert failed: {e}")
 
+def calculate_annualized_ev(edge_pct, expiration_str):
+    """Calculates Annualized Expected Value."""
+    try:
+        now_dt = datetime.now(timezone.utc)
+        if not expiration_str: return 0
+        try:
+            exp = pd.to_datetime(expiration_str)
+            if exp.tzinfo is None: exp = exp.tz_localize('UTC')
+        except Exception: return 0
+        days_to_res = (exp - now_dt).days
+        if days_to_res <= 0: days_to_res = 1
+        return (edge_pct * 365) / days_to_res
+    except Exception: return 0
+
     # ══════════════ TIER 2: PAPER TRADING ══════════════
     print("\n🧪 Running Quant Engine (Paper Trading)...")
     snapshot_records, paper_ops = scan_quant_ml()
@@ -271,8 +307,14 @@ def run_scan():
                 "MarketTicker": opp.get('market_ticker', ''),
                 "MarketDate": opp.get('market_date', ''),
                 "Expiration": opp.get('expiration', ''),
+                "MarketPrice": float(opp.get('market_price', 0)),
+                "ModelProb": float(opp.get('model_probability', 0)),
+                "Spread": float(opp.get('spread', 5)), # Default to 5
+                "AnnualizedEV": calculate_annualized_ev(float(opp.get('edge', 0)), opp.get('expiration', ''))
             }
-            live_table.create_entity(entity)
+            # Only save to Live if spread is reasonable (<20 cents, but we filter stricter in UI)
+            if entity["Spread"] <= 20: 
+                live_table.create_entity(entity)
         except Exception as e:
             print(f"  ⚠️ Failed to save live op: {e}")
 

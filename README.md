@@ -1,3 +1,13 @@
+---
+title: Kalshi Market Scanner
+emoji: 📊
+colorFrom: green
+colorTo: gray
+sdk: streamlit
+app_file: streamlit_app.py
+pinned: false
+---
+
 # Prediction Market Edge Finder
 
 **Prediction Market Edge Finder** is a professional-grade analytics dashboard that identifies statistical edges in Kalshi prediction markets for SPX, Nasdaq, BTC, and ETH. It combines real-time market data, AI-powered probability models (LightGBM), multi-source sentiment analysis, and a "Bloomberg Terminal" style interface.
