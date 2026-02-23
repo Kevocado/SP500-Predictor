@@ -10,6 +10,14 @@ pinned: false
 
 # Prediction Market Edge Finder
 
+> [!WARNING]
+> **⚠️ DISCLAIMER: RESEARCH AND EDUCATION TOOL ONLY**
+> - ✋ **No real or simulated orders** are placed by this app.
+> - 📊 All market data is read-only (view-only).
+> - 🧪 Quant signals are **experimental** and for backtesting only.
+> - 💰 Do NOT rely on this app for actual trading decisions.
+> Use Kalshi's official platform to execute real trades.
+
 **Prediction Market Edge Finder** is a professional-grade analytics dashboard that identifies statistical edges in Kalshi prediction markets for SPX, Nasdaq, BTC, and ETH. It combines real-time market data, AI-powered probability models (LightGBM), multi-source sentiment analysis, and a "Bloomberg Terminal" style interface.
 
 ## ⚡ Key Features
@@ -26,14 +34,11 @@ pinned: false
 
 ## 🏗 Architecture
 
-| Layer       | Technology                                           |
-| ----------- | ---------------------------------------------------- |
-| Frontend    | [Streamlit](https://streamlit.io/)                      |
-| Modeling    | [LightGBM](https://lightgbm.readthedocs.io/)            |
-| Price Data  | [YFinance](https://pypi.org/project/yfinance/)          |
-| Market Data | [Kalshi API](https://kalshi.com/)                       |
-| Sentiment   | alternative.me Fear & Greed API, VIX, price momentum |
-| Config      | YAML (`config/settings.yaml`)                      |
+**Frontend:** Streamlit web app
+**Backend:** Python 3.9+
+**Scanner:** Background terminal process (runs independently via cron or daemon)
+**Storage:** `data/` local cache & remote Hugging Face Model Hub
+**APIs:** Kalshi (Markets), FRED (Macro), Alpaca (Paper Data)
 
 ## 📂 Project Structure
 
@@ -76,26 +81,43 @@ cd <repository-directory>
 pip install -r requirements.txt
 ```
 
-### Environment Setup
+## ⚙️ Configuration (.env)
 
-Create a `.env` file in the root:
+Create a `.env` file in the root directory before running the app. You must populate these variables:
 
 ```env
-KALSHI_API_KEY=your_kalshi_api_key_here
-# Optional: AZURE_CONNECTION_STRING=...
+# Kalshi Trading API (Required for Portfolio Tab)
+KALSHI_API_KEY_ID=your_kalshi_api_key_id_here
+# Note: You must also place your kalshi_private_key.pem in the root directory.
+
+# Alpaca Paper Trading (Required for Backtesting Quant Trades)
+APCA_API_KEY_ID=your_alpaca_key
+APCA_API_SECRET_KEY=your_alpaca_secret
+
+# AI & Infrastructure
+FRED_API_KEY=your_fred_api_key
+HF_TOKEN=your_hugging_face_token
+AZURE_CONNECTION_STRING=your_azure_storage_string
+```
+
+## 🚀 Getting Started
+
+### Step 1: Start the Background Scanner
+The UI reads from pre-computed data. You must run the scanner in the background to fetch new markets and update Azure Storage.
+```bash
+python scripts/background_scanner.py
+```
+*(Keep this running. It updates markets every 30 seconds)*
+
+### Step 2: Start the Web UI
+```bash
+streamlit run streamlit_app.py
 ```
 
 ## 🖥️ Usage
 
-```bash
-
-streamlit run streamlit_app.py
-```
-
-- **Tab 1 — Kalshi Edge Finder**: Select asset → view opportunities → analyze edge
-- **Tab 2 — Market Scanner**: Click "Scan Markets" → view signal cards with edge & Kelly sizing
-- **Sentiment**: Expand the sentiment panel in either tab for composite scores and averages
-
-## ⚠️ Disclaimer
-
-This tool is for informational and educational purposes only. Prediction markets are high-risk. Trade at your own risk.
+- **📁 Portfolio**: Monitor your live Kalshi positions, calculate unrealized P&L, and track Smart Exit alerts on decaying edges.
+- **⛈️ Weather Arb**: View extreme weather predictions matched against official NWS forecasts.
+- **🏛️ Macro/Fed**: Explore macroeconomic markets (Interest Rates, CPI YoY, GDP) modeled with live FRED data.
+- **🧪 Quant Lab (Paper)**: View hourly probabilistic forecasts for SPX, QQQ, and Crypto options automatically trained on price tick data.
+- **📊 Backtesting**: Analyze the historical performance of the Quantitative ML engines (Sharpe Ratio, Max Drawdown).

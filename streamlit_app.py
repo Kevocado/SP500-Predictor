@@ -189,25 +189,26 @@ with st.sidebar:
         "Min Edge %", 0, 50, 5, 
         help="Difference between our model's probability and the market price. Higher = better margin of safety."
     )
-    min_kelly_filter = st.slider(
-        "Min Kelly Bet %", 0.0, 10.0, 1.0,
-        help="Recommended bankroll % to wager based on the Kelly Criterion. Filters out small/low-conviction bets."
-    )
-    max_spread = st.slider(
-        "Max Bid-Ask Spread (¢)", 1, 25, 10,
-        help="Filters out illiquid markets where the difference between BUY and SELL prices is too large (wiping out profit)."
-    )
-    
-    st.markdown("---")
-    st.markdown("### 📈 Risk Management")
-    prob_gate = st.checkbox(
-        "Confidence Gate (15-85% Prob)", value=True,
-        help="Focuses on moderate-probability events where price movements are most dynamic. Filters out 'sure things' and 'long shots'."
-    )
-    annualized_sort = st.checkbox(
-        "Prioritize Annualized EV", value=False,
-        help="Sort by Annualized Expected Value: (Edge / Days to Expiry) * 365. Helps compare short-term vs long-term trades."
-    )
+    with st.expander("⚙️ Advanced Filters (Institutional)"):
+        min_kelly_filter = st.slider(
+            "Min Kelly Bet %", 0.0, 10.0, 1.0,
+            help="Recommended bankroll % to wager based on the Kelly Criterion. Filters out small/low-conviction bets."
+        )
+        max_spread = st.slider(
+            "Max Bid-Ask Spread (¢)", 1, 25, 10,
+            help="Filters out illiquid markets where the difference between BUY and SELL prices is too large (wiping out profit)."
+        )
+        
+        st.markdown("---")
+        st.markdown("### 📈 Risk Management")
+        prob_gate = st.checkbox(
+            "Confidence Gate (15-85% Prob)", value=True,
+            help="Focuses on moderate-probability events where price movements are most dynamic. Filters out 'sure things' and 'long shots'."
+        )
+        annualized_sort = st.checkbox(
+            "Prioritize Annualized EV", value=False,
+            help="Sort by Annualized Expected Value: (Edge / Days to Expiry) * 365. Helps compare short-term vs long-term trades."
+        )
     
     st.markdown("---")
     st.caption("v7.0 PhD Edition")
@@ -235,10 +236,10 @@ def calculate_annualized_ev(edge_pct, expiration_str):
     except Exception:
         return 0
 
-def render_grid(data, key_suffix):
+def render_grid(data, key_suffix, empty_msg="No matching opportunities found."):
     """Renders high-density data grid using native st.dataframe."""
     if not data:
-        st.info("No matching opportunities found.")
+        st.info(empty_msg, icon="ℹ️")
         return
 
     # Convert to DataFrame
@@ -264,7 +265,7 @@ def render_grid(data, key_suffix):
         df = df[df['KellySuggestion'] >= min_kelly_filter]
 
     if df.empty:
-        st.info("No opportunities match your institutional filters.")
+        st.info(empty_msg, icon="ℹ️")
         return
 
     # Sort
@@ -301,6 +302,7 @@ def render_grid(data, key_suffix):
             
             # Tile UI (Refined for Clarity)
             edge_color = "#3fb950" if edge_val > 0 else "#f85149"
+            edge_emoji = "📈" if edge_val > 0 else "📉"
             
             st.markdown(f"""
             <div class="quant-card" style="border-left: 5px solid {edge_color}; margin-bottom: 25px; position: relative;">
@@ -315,7 +317,7 @@ def render_grid(data, key_suffix):
                         </div>
                     </div>
                     <div style="text-align: right;">
-                        <span class="edge-positive" style="font-size: 1.5rem; color: {edge_color}!important;">{edge_val:+.1f}%</span><br>
+                        <span class="edge-positive" style="font-size: 1.5rem; color: {edge_color}!important;">{edge_emoji} {edge_val:+.1f}%</span><br>
                         <span style="color: #8b949e; font-size: 0.85rem;">EV: {float(row.get('AnnualizedEV', 0)):.0f}% Ann.</span>
                     </div>
                 </div>
@@ -375,6 +377,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 live_opps, paper_opps, last_updated = fetch_opportunities()
+live_opps = live_opps or []
+paper_opps = paper_opps or []
 all_entities = live_opps + paper_opps
 
 weather_opps = [o for o in live_opps if o.get('Engine', '').lower() == 'weather']
@@ -385,10 +389,13 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("⛈️ Weather", len(weather_opps))
 col2.metric("🏛️ Macro", len(macro_opps))
 col3.metric("🧪 Quant", len(paper_opps))
-col4.markdown(f"**Last Sync:** {last_updated or 'N/A'}")
+col4.markdown(f"**📅 Last Sync:** {last_updated or 'N/A'}")
 
-if st.button("🔄 Force Refresh", use_container_width=True):
+if st.button("🔄 Request New Scan", use_container_width=True):
+    st.toast("Scan requested. Updates arriving in ~30 seconds.", icon="⏳")
     st.cache_data.clear()
+    import time
+    time.sleep(1) # Visual delay for toast
     st.rerun()
 
 # ─── MARKET HEAT GAUGE (PhD Integration) ───────────────────────────
@@ -438,8 +445,9 @@ tab_portfolio, tab_weather, tab_macro, tab_niche, tab_quant, tab_arbitrage, tab_
 # TAB 0: PORTFOLIO (READ-ONLY)
 # ═══════════════════════════════════════════════════════════════
 with tab_portfolio:
-    st.markdown("### 📁 My Kalshi Portfolio (Read-Only)")
-    st.caption("Live view of your positions, balance, and P&L. No trades are placed from this app.")
+    st.warning("⚠️ **READ-ONLY SIMULATION**: This portfolio view is for education only. No real or simulated trades are executed from this app.")
+    st.markdown("### 📁 My Kalshi Portfolio")
+    st.caption("Live view of your positions, balance, and P&L.")
 
     try:
         from src.kalshi_portfolio import KalshiPortfolio, check_portfolio_available
@@ -591,24 +599,18 @@ with tab_portfolio:
                             
                         card_style = "border: 1px solid #3fb950; box-shadow: 0 0 10px rgba(63, 185, 80, 0.2);" if is_target_hit else ""
 
-                        st.markdown(f"""
-                        <div class="quant-card" style="{card_style}">
-                            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                                <div style="width: 70%;">
-                                    <strong style="color: #c9d1d9; font-size: 1.1rem;">{readable_ticker}</strong>
-                                    <div style="color: #8b949e; font-size: 0.8rem; margin-bottom: 6px;">{raw_ticker}</div>
-                                    <span class="stat-pill">{contracts} contracts</span>
-                                    {model_html}
-                                    <br>
-                                    {exit_html}
-                                </div>
-                                <div style="text-align: right;">
-                                    <span class="{pnl_class}" style="font-size: 1.2rem; font-weight: bold;">{pnl_display}</span>
-                                    <br><span style="color: #8b949e; font-size: 0.85rem;">Avg Cost: <strong>{avg_cost_cents}¢</strong> | Current: <strong>{current_display}</strong></span>
-                                </div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        with st.container(border=True):
+                            c1, c2 = st.columns([3, 1])
+                            with c1:
+                                st.markdown(f"**{readable_ticker}**")
+                                st.caption(f"{raw_ticker} | {contracts} contracts")
+                                if model_info:
+                                    st.markdown(model_html, unsafe_allow_html=True)
+                                if exit_html:
+                                    st.markdown(exit_html, unsafe_allow_html=True)
+                            with c2:
+                                st.markdown(f"<div style='text-align: right;' class='{pnl_class}'><span style='font-size: 1.2rem; font-weight: bold;'>{pnl_display}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div style='text-align: right; color: #8b949e; font-size: 0.85rem;'>Avg Cost: <strong>{avg_cost_cents}¢</strong><br>Current: <strong>{current_display}</strong></div>", unsafe_allow_html=True)
                         
                         # Target tracking input
                         col_t1, col_t2 = st.columns([1, 3])
@@ -808,7 +810,7 @@ def render_live_card(sig, card_index):
             filtered_weather = sort_and_filter_opps(list(weather_opps), "weather")
 
             if "Weather" in filter_category:
-                render_grid(filtered_weather, "weather")
+                render_grid(filtered_weather, "weather", empty_msg="🌤️ No weather opportunities match your filters. Try adjusting Min Edge % or Max Spread.")
             else:
                 st.info("Weather category is disabled in sidebar.")
                 
@@ -847,7 +849,7 @@ with tab_macro:
         filtered_macro = sort_and_filter_opps(list(macro_opps), "macro")
 
         if "Macro" in filter_category:
-            render_grid(filtered_macro, "macro")
+            render_grid(filtered_macro, "macro", empty_msg="🏛️ No macroeconomic events (Fed/CPI) match your filters.")
         else:
             st.info("Macro category is disabled in sidebar.")
     except Exception as e:
@@ -864,7 +866,7 @@ with tab_niche:
         filtered_niche = sort_and_filter_opps(list(niche_opps), "niche")
         
         if "Niche" in filter_category:
-            render_grid(filtered_niche, "niche")
+            render_grid(filtered_niche, "niche", empty_msg="✈️ No alternative data alpha (TSA/EIA) matches your filters.")
         else:
             st.info("Niche Alpha category is disabled in sidebar.")
     except Exception as e:
@@ -893,7 +895,7 @@ with tab_quant:
         filtered_paper = sort_and_filter_opps(list(paper_opps), "paper")
 
         if "Alpha" in filter_category:
-            render_grid(filtered_paper, "paper")
+            render_grid(filtered_paper, "paper", empty_msg="🧪 No quantitative signals match your active risk filters.")
         else:
             st.info("Quant Alpha category is disabled in sidebar.")
     except Exception as e:

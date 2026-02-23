@@ -9,12 +9,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Initialize Alpaca clients
+# Alpaca API Credentials (loaded from ENV)
 API_KEY = os.getenv("ALPACA_API_KEY", "")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
-
-stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-crypto_client = CryptoHistoricalDataClient(API_KEY, SECRET_KEY)
 
 def get_macro_data():
     """Fetches VIX and 10Y-2Y Yield Curve data from FRED."""
@@ -95,7 +92,12 @@ def fetch_data(ticker="SPY", period="1mo", interval="1m"):
         timeframe = TimeFrame.Minute # default
 
     try:
+        if not API_KEY or not SECRET_KEY:
+            print(f"⚠️ Missing Alpaca API credentials. Cannot fetch {symbol}.")
+            return pd.DataFrame()
+
         if is_crypto:
+            crypto_client = CryptoHistoricalDataClient(API_KEY, SECRET_KEY)
             request_params = CryptoBarsRequest(
                 symbol_or_symbols=symbol,
                 timeframe=timeframe,
@@ -103,6 +105,7 @@ def fetch_data(ticker="SPY", period="1mo", interval="1m"):
             )
             bars = crypto_client.get_crypto_bars(request_params)
         else:
+            stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
             request_params = StockBarsRequest(
                 symbol_or_symbols=symbol,
                 timeframe=timeframe,
