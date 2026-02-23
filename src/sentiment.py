@@ -2,12 +2,14 @@
 Sentiment Analysis Module
 Fetches market sentiment data from free sources (Fear & Greed Index, VIX-based sentiment,
 put/call ratio proxy) and exposes sentiment scores for the dashboard and feature engineering.
+
+NOTE: yfinance has been removed. VIX sentiment now uses a CBOE VIX proxy via requests,
+and price momentum uses the project's Alpaca-based data_loader.
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -21,9 +23,9 @@ class SentimentAnalyzer:
     Multi-source sentiment analyzer.
     Sources:
       1. CNN Fear & Greed Index (via alternative.me API — free)
-      2. VIX-derived sentiment (yfinance — already available)
+      2. VIX-derived sentiment (via CBOE VIX proxy)
       3. Put/Call proxy via market breadth
-      4. Price momentum sentiment (short-term vs long-term returns)
+      4. Price momentum sentiment (via Alpaca data_loader)
     """
 
     def __init__(self):
@@ -87,38 +89,44 @@ class SentimentAnalyzer:
             return self._cache['vix_sentiment']['data']
 
         try:
-            vix = yf.Ticker("^VIX").history(period="30d")
-            if not vix.empty:
-                current_vix = vix['Close'].iloc[-1]
-                avg_7d = vix['Close'].iloc[-7:].mean() if len(vix) >= 7 else vix['Close'].mean()
-                avg_30d = vix['Close'].mean()
+            # Use CBOE VIX data via a public JSON endpoint
+            resp = requests.get(
+                "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/_VIX.json",
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json().get('data', [])
+                if data and len(data) > 0:
+                    closes = [d[1] for d in data[-30:] if d[1] is not None]  # last 30 entries
+                    if closes:
+                        current_vix = closes[-1]
+                        avg_7d = np.mean(closes[-7:]) if len(closes) >= 7 else np.mean(closes)
+                        avg_30d = np.mean(closes)
 
-                # Score: low VIX = bullish sentiment, high VIX = bearish
-                # Scale: VIX 10-40 mapped to sentiment 0-100 (inverted)
-                score = max(0, min(100, 100 - ((current_vix - 10) / 30) * 100))
+                        score = max(0, min(100, 100 - ((current_vix - 10) / 30) * 100))
 
-                if current_vix < 15:
-                    label = "Extreme Greed"
-                elif current_vix < 20:
-                    label = "Greed"
-                elif current_vix < 25:
-                    label = "Neutral"
-                elif current_vix < 30:
-                    label = "Fear"
-                else:
-                    label = "Extreme Fear"
+                        if current_vix < 15:
+                            label = "Extreme Greed"
+                        elif current_vix < 20:
+                            label = "Greed"
+                        elif current_vix < 25:
+                            label = "Neutral"
+                        elif current_vix < 30:
+                            label = "Fear"
+                        else:
+                            label = "Extreme Fear"
 
-                result = {
-                    'current_vix': round(current_vix, 2),
-                    'score': round(score, 1),
-                    'label': label,
-                    'avg_7d_vix': round(avg_7d, 2),
-                    'avg_30d_vix': round(avg_30d, 2),
-                    'trend': 'improving' if current_vix < avg_7d else 'declining',
-                    'source': 'VIX'
-                }
-                self._cache['vix_sentiment'] = {'data': result, 'timestamp': datetime.now()}
-                return result
+                        result = {
+                            'current_vix': round(current_vix, 2),
+                            'score': round(score, 1),
+                            'label': label,
+                            'avg_7d_vix': round(avg_7d, 2),
+                            'avg_30d_vix': round(avg_30d, 2),
+                            'trend': 'improving' if current_vix < avg_7d else 'declining',
+                            'source': 'CBOE VIX'
+                        }
+                        self._cache['vix_sentiment'] = {'data': result, 'timestamp': datetime.now()}
+                        return result
         except Exception as e:
             logger.warning(f"VIX sentiment fetch failed: {e}")
 
@@ -129,16 +137,15 @@ class SentimentAnalyzer:
     # Source 3: Momentum sentiment (price-derived)
     # ------------------------------------------------------------------
     def get_momentum_sentiment(self, ticker: str = "SPX") -> Dict:
-        """Calculate momentum-based sentiment from price returns."""
-        yf_map = {"SPX": "^GSPC", "Nasdaq": "^IXIC", "BTC": "BTC-USD", "ETH": "ETH-USD"}
+        """Calculate momentum-based sentiment from price returns using Alpaca."""
         cache_key = f"momentum_{ticker}"
 
         if self._is_cached(cache_key):
             return self._cache[cache_key]['data']
 
         try:
-            yf_ticker = yf_map.get(ticker, "^GSPC")
-            df = yf.Ticker(yf_ticker).history(period="60d")
+            from src.data_loader import fetch_data
+            df = fetch_data(ticker, period="3mo", interval="1d")
             if not df.empty and len(df) > 20:
                 close = df['Close']
                 ret_1d = (close.iloc[-1] / close.iloc[-2] - 1) * 100
@@ -146,7 +153,6 @@ class SentimentAnalyzer:
                 ret_20d = (close.iloc[-1] / close.iloc[-20] - 1) * 100 if len(close) >= 20 else 0
 
                 # Composite momentum score (0-100)
-                # Positive returns = bullish, negative = bearish
                 raw = (ret_1d * 0.3 + ret_5d * 0.4 + ret_20d * 0.3)
                 score = max(0, min(100, 50 + raw * 5))
 
@@ -168,7 +174,7 @@ class SentimentAnalyzer:
                     'ret_5d': round(ret_5d, 2),
                     'ret_20d': round(ret_20d, 2),
                     'ticker': ticker,
-                    'source': 'Price Momentum'
+                    'source': 'Alpaca Price Momentum'
                 }
                 self._cache[cache_key] = {'data': result, 'timestamp': datetime.now()}
                 return result

@@ -7,3 +7,5 @@ model/
 Data/
 wandb/
 .streamlit/secrets.toml
+kalshi_private_key.pem
+Kalshi Edge Tracker.txt

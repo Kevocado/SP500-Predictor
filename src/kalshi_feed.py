@@ -316,3 +316,109 @@ def check_kalshi_connection():
         return response.status_code == 200
     except:
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SERIES-BASED FETCH — Fastest way to get category-specific markets
+# ═══════════════════════════════════════════════════════════════════════
+
+# Known series tickers for our target categories
+WEATHER_SERIES = {
+    'NYC': 'KXHIGHNY',
+    'Chicago': 'KXHIGHCHI',
+    'Miami': 'KXHIGHMIA',
+}
+
+ECONOMICS_SERIES = {
+    'CPI': 'KXLCPIMAXYOY',
+    'Fed Rate': 'KXFED',
+    'GDP': 'KXGDPYEAR',
+    'Recession': 'KXRECSSNBER',
+    'Unemployment': 'KXU3MAX',
+    'Fed Decision': 'KXFEDDECISION',
+}
+
+
+def get_markets_by_series(series_ticker, limit=200):
+    """
+    Fetch all open markets for a specific series_ticker.
+    This is the FASTEST way to get category-specific markets from Kalshi.
+
+    Args:
+        series_ticker: e.g. 'KXHIGHNY', 'KXLCPIMAXYOY', 'KXFED'
+        limit: max markets to return
+
+    Returns:
+        list of market dicts with all fields from the API
+    """
+    headers = _headers()
+    try:
+        params = {
+            'series_ticker': series_ticker,
+            'status': 'open',
+            'limit': limit,
+        }
+        r = requests.get(KALSHI_API_URL, params=params, headers=headers, timeout=10)
+        if r.status_code == 200:
+            markets = r.json().get('markets', [])
+            return markets
+    except Exception as e:
+        print(f"  ❌ Failed to fetch series {series_ticker}: {e}")
+    return []
+
+
+def get_weather_markets():
+    """Fetch all active daily temperature markets across all cities."""
+    all_markets = []
+    for city, series in WEATHER_SERIES.items():
+        markets = get_markets_by_series(series)
+        for m in markets:
+            m['_city'] = city
+            m['_series'] = series
+        all_markets.extend(markets)
+        if markets:
+            print(f"  ⛈️ {city}: {len(markets)} temperature markets")
+    return all_markets
+
+
+def get_economics_markets():
+    """Fetch all active economics markets (CPI, Fed rate, GDP, etc)."""
+    all_markets = []
+    for label, series in ECONOMICS_SERIES.items():
+        markets = get_markets_by_series(series)
+        for m in markets:
+            m['_econ_type'] = label
+            m['_series'] = series
+        all_markets.extend(markets)
+        if markets:
+            print(f"  🏛️ {label}: {len(markets)} markets")
+    return all_markets
+
+
+def get_kalshi_url(market_ticker):
+    """
+    Generate clickable Kalshi website URL from a market ticker.
+
+    Example:
+        KXHIGHNY-26FEB22-T45 → https://kalshi.com/markets/kxhighny
+        KXFED-27MAR-T4.00   → https://kalshi.com/markets/kxfed
+    """
+    # Extract the series part (everything before the first date/number segment)
+    # KXHIGHNY-26FEB22-T45 → series is KXHIGHNY
+    parts = market_ticker.split('-')
+    series = parts[0].lower() if parts else market_ticker.lower()
+    return f"https://kalshi.com/markets/{series}"
+
+
+def get_kalshi_event_url(event_ticker):
+    """
+    Generate direct event URL on Kalshi.
+
+    Example:
+        KXHIGHNY-26FEB22 → https://kalshi.com/markets/kxhighny/kxhighny-26feb22
+    """
+    parts = event_ticker.split('-')
+    series = parts[0].lower() if parts else event_ticker.lower()
+    event_lower = event_ticker.lower()
+    return f"https://kalshi.com/markets/{series}/{event_lower}"
+

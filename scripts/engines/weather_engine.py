@@ -1,154 +1,234 @@
-import os
+"""
+Weather Arbitrage Engine - NWS API + Kalshi Series
+
+EDGE SOURCE: National Weather Service is the official settlement source for Kalshi weather markets.
+If NWS forecast says 90% chance of 40°F+ high, but Kalshi "above 40°" trading at 50¢ → 40% edge.
+
+KALSHI SERIES:
+  KXHIGHNY  - NYC daily high temperature
+  KXHIGHCHI - Chicago daily high temperature
+  KXHIGHMIA - Miami daily high temperature
+
+DATA: FREE - https://api.weather.gov (NWS is settlement source!)
+"""
+
 import requests
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
+import sys
+import os
 
-load_dotenv()
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from src.kalshi_feed import get_weather_markets, get_kalshi_event_url
 
-# NOAA Grid Endpoints (found via coordinates)
-# Central Park, NY: 40.7826, -73.9656 -> OKX/33,35
-# O'Hare, Chicago: 41.9742, -87.9073 -> LOT/73,73
 
-LOCATIONS = {
-    "NYC": {
-        "name": "New York",
-        "grid_url": "https://api.weather.gov/gridpoints/OKX/33,35/forecast",
-        "kalshi_prefix": "KXNYC" # e.g. KXNYC-24DEC15-T50
-    },
-    "CHI": {
-        "name": "Chicago",
-        "grid_url": "https://api.weather.gov/gridpoints/LOT/73,73/forecast",
-        "kalshi_prefix": "KXCHI"
-    }
-}
+class WeatherEngine:
+    def __init__(self):
+        self.base_url = "https://api.weather.gov"
 
-def fetch_noaa_forecast(grid_url):
-    """
-    Fetches the 7-day forecast from NOAA API and extracts daily high temperatures.
-    """
-    headers = {
-        "User-Agent": "(SP500_Predictor, contact@example.com)"
-    }
-
-    try:
-        response = requests.get(grid_url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            print(f"NOAA API Error: {response.status_code}")
-            return None
-
-        data = response.json()
-        periods = data.get("properties", {}).get("periods", [])
-
-        forecasts = {}
-        for period in periods:
-            # We only care about daytime highs for these typical Kalshi markets
-            if period.get("isDaytime"):
-                date_str = period.get("startTime")[:10] # YYYY-MM-DD
-                temp = period.get("temperature")
-                forecasts[date_str] = temp
-
-        return forecasts
-    except Exception as e:
-        print(f"Error fetching NOAA data: {e}")
-        return None
-
-def fetch_kalshi_market_data(ticker):
-    """
-    Fetches market pricing from Kalshi for a given ticker.
-    """
-    api_key = os.getenv("KALSHI_API_KEY")
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-
-    try:
-        r = requests.get(
-            f"https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook",
-            headers=headers, timeout=5
-        )
-        if r.status_code != 200:
-            return None
-
-        data = r.json().get('orderbook', {})
-        yes_bids = data.get('yes', []) or []
-        no_bids = data.get('no', []) or []
-
-        best_yes = yes_bids[-1][0] if yes_bids else 0
-        best_no = no_bids[-1][0] if no_bids else 0
-
-        if best_yes == 0 and best_no == 0:
-            return None
-
-        # Implied probability is roughly the yes price / 100
-        implied_prob = best_yes / 100.0 if best_yes > 0 else (100 - best_no) / 100.0
-
-        return {
-            "best_yes_cents": best_yes,
-            "best_no_cents": best_no,
-            "implied_prob": implied_prob
+        # NWS gridpoints for cities with Kalshi markets
+        self.cities = {
+            'NYC': {'office': 'OKX', 'gridX': 33, 'gridY': 37},
+            'Chicago': {'office': 'LOT', 'gridX': 76, 'gridY': 74},
+            'Miami': {'office': 'MFL', 'gridX': 110, 'gridY': 50},
         }
-    except Exception as e:
-        return None
 
-def calculate_weather_edge():
-    """
-    Compares NOAA forecast data against Kalshi daily high markets to find > 5% edge.
-    """
-    opportunities = []
+    def get_nws_forecast(self, city):
+        """
+        Fetch NWS hourly forecast and extract high temp predictions.
+        Returns forecast highs for today and tomorrow.
+        """
+        try:
+            grid = self.cities[city]
+            url = f"{self.base_url}/gridpoints/{grid['office']}/{grid['gridX']},{grid['gridY']}/forecast/hourly"
 
-    for loc_code, loc_info in LOCATIONS.items():
-        print(f"Fetching NOAA forecast for {loc_info['name']}...")
-        forecasts = fetch_noaa_forecast(loc_info['grid_url'])
+            response = requests.get(url, headers={'User-Agent': 'KalshiEdgeFinder/1.0'}, timeout=15)
+            response.raise_for_status()
 
-        if not forecasts:
-            continue
+            data = response.json()
+            periods = data['properties']['periods']
 
-        # For this engine, we'll look at tomorrow's forecast to compare against markets
-        tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+            # Group temps by date
+            daily_highs = {}
+            for p in periods:
+                dt = datetime.fromisoformat(p['startTime'].replace('Z', '+00:00'))
+                date_str = dt.strftime('%Y-%m-%d')
+                temp = p['temperature']
+                if date_str not in daily_highs or temp > daily_highs[date_str]:
+                    daily_highs[date_str] = temp
 
-        if tomorrow not in forecasts:
-            print(f"Could not find tomorrow's forecast for {loc_info['name']}.")
-            continue
+            return daily_highs
 
-        predicted_high = forecasts[tomorrow]
-        print(f"  Tomorrow's Predicted High for {loc_code}: {predicted_high}°F")
+        except Exception as e:
+            print(f"    ⚠️ NWS fetch error for {city}: {e}")
+            return {}
 
-        # In a real scenario, you'd query the Kalshi API for active markets on this date.
-        # We will simulate checking a specific strike price close to the predicted high.
-        # Let's say we check if the temperature will be greater than predicted_high - 2
+    def find_opportunities(self, kalshi_markets=None):
+        """
+        Compare NWS forecasts to Kalshi temperature markets.
+        Uses get_weather_markets() from kalshi_feed.py to get real market data.
 
-        test_strike = predicted_high - 2
-        date_formatted = (datetime.now() + timedelta(days=1)).strftime('%y%b%d').upper() # e.g. 24DEC15
-        simulated_ticker = f"{loc_info['kalshi_prefix']}-{date_formatted}-T{test_strike}"
+        Returns list of opportunities with edge > 10%.
+        """
+        # Fetch Kalshi weather markets directly by series ticker
+        if kalshi_markets is None:
+            kalshi_markets = get_weather_markets()
 
-        # Our internal model: The NOAA forecast is highly accurate 1 day out.
-        # If predicted high > strike + 2 degrees, we assign a 90% probability.
-        our_prob = 0.90 if predicted_high > test_strike else 0.10
+        if not kalshi_markets:
+            print("    No Kalshi weather markets found.")
+            return []
 
-        market_data = fetch_kalshi_market_data(simulated_ticker)
+        opportunities = []
 
-        if market_data:
-            market_prob = market_data["implied_prob"]
-            edge = our_prob - market_prob
+        # Get NWS forecasts for all cities
+        forecasts = {}
+        for city in self.cities:
+            highs = self.get_nws_forecast(city)
+            if highs:
+                forecasts[city] = highs
+                print(f"    📡 NWS {city}: {highs}")
 
-            if abs(edge) > 0.05:
+        # Match against Kalshi markets
+        now = datetime.now()
+        today_str = now.strftime('%Y-%m-%d')
+
+        for market in kalshi_markets:
+            city = market.get('_city', '')
+            if city not in forecasts:
+                continue
+
+            # Parse the market's date from event_ticker (e.g., KXHIGHNY-26FEB23)
+            event_ticker = market.get('event_ticker', '')
+            market_date = self._parse_event_date(event_ticker)
+            if not market_date:
+                continue
+
+            # ── EXPIRATION FILTER ──
+            # Skip markets whose date has passed
+            if market_date < today_str:
+                continue
+            # Skip same-day markets after 6PM (high temp already recorded)
+            if market_date == today_str and now.hour >= 18:
+                continue
+
+            # Get the NWS forecast high for that date
+            forecast_high = forecasts[city].get(market_date)
+            if forecast_high is None:
+                continue
+
+            # Market structure: floor_strike = "above X", cap_strike = "below X"
+            floor = market.get('floor_strike')
+            cap = market.get('cap_strike')
+            yes_ask = market.get('yes_ask', 0)
+            ticker = market.get('ticker', '')
+            title = market.get('title', '')
+            subtitle = market.get('subtitle', '')
+            expiration = market.get('expiration_time', '')
+
+            if yes_ask == 0:
+                continue
+
+            # Calculate our probability based on NWS forecast
+            edge = None
+            action = None
+            nws_prob = None
+
+            if floor is not None and cap is None:
+                # "Above X" market — e.g. "Will the high temp be >40°?"
+                if forecast_high > floor + 3:
+                    nws_prob = 90  # Very confident above
+                elif forecast_high > floor:
+                    nws_prob = 75  # Moderately confident above
+                elif forecast_high > floor - 2:
+                    nws_prob = 40  # On the edge
+                else:
+                    nws_prob = 10  # Unlikely above
+
+                edge = nws_prob - yes_ask
+                action = 'BUY YES' if edge > 0 else 'BUY NO'
+
+            elif cap is not None and floor is None:
+                # "Below X" market — e.g. "Will the high temp be <33°?"
+                if forecast_high < cap - 3:
+                    nws_prob = 90
+                elif forecast_high < cap:
+                    nws_prob = 75
+                elif forecast_high < cap + 2:
+                    nws_prob = 40
+                else:
+                    nws_prob = 10
+
+                edge = nws_prob - yes_ask
+                action = 'BUY YES' if edge > 0 else 'BUY NO'
+
+            elif floor is not None and cap is not None:
+                # Range market — e.g. "Will the high temp be 35-36°?"
+                if floor <= forecast_high <= cap:
+                    nws_prob = 70  # In range
+                elif abs(forecast_high - (floor + cap) / 2) <= 2:
+                    nws_prob = 35  # Near range
+                else:
+                    nws_prob = 5   # Out of range
+
+                edge = nws_prob - yes_ask
+                action = 'BUY YES' if edge > 0 else 'BUY NO'
+
+            if edge is not None and abs(edge) > 10:
+                kalshi_url = get_kalshi_event_url(event_ticker)
                 opportunities.append({
-                    "PartitionKey": "WEATHER_ENGINE",
-                    "RowKey": f"{loc_code}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                    "MarketTicker": simulated_ticker,
-                    "SignalType": f"Daily High {loc_code}",
-                    "CalculatedProb": our_prob,
-                    "MarketProb": market_prob,
-                    "Edge": round(edge, 4),
-                    "Action": "BUY YES" if edge > 0 else "BUY NO",
-                    "Reasoning": f"NOAA forecasts {predicted_high}°F for {tomorrow}. Our prob for >{test_strike}°F is {our_prob:.2f} but market is at {market_prob:.2f}",
-                    "Timestamp": datetime.utcnow().isoformat()
+                    'engine': 'Weather',
+                    'asset': city,
+                    'market_title': f"{title} ({subtitle})" if subtitle else title,
+                    'market_ticker': ticker,
+                    'event_ticker': event_ticker,
+                    'action': action,
+                    'model_probability': nws_prob,
+                    'market_price': yes_ask,
+                    'edge': abs(edge),
+                    'confidence': nws_prob,
+                    'reasoning': f"NWS forecasts {forecast_high}°F high for {city} on {market_date}. "
+                                 f"Model says {nws_prob}% prob, market at {yes_ask}¢.",
+                    'data_source': 'NWS Official API (Settlement Source)',
+                    'kalshi_url': kalshi_url,
+                    'market_date': market_date,
+                    'expiration': expiration or market_date,
                 })
 
-    return opportunities
+        return opportunities
+
+    def _parse_event_date(self, event_ticker):
+        """Parse date from event ticker like KXHIGHNY-26FEB23 → 2026-02-23"""
+        try:
+            parts = event_ticker.split('-')
+            if len(parts) >= 2:
+                date_part = parts[1]  # e.g., "26FEB23"
+                # Parse: YY + MON + DD
+                year = 2000 + int(date_part[:2])
+                month_str = date_part[2:5]
+                day = int(date_part[5:])
+                months = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+                           'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
+                month = months.get(month_str.upper(), 0)
+                if month:
+                    return f"{year}-{month:02d}-{day:02d}"
+        except:
+            pass
+        return None
+
 
 if __name__ == "__main__":
     print("Running Weather Engine...")
-    ops = calculate_weather_edge()
-    if not ops:
-        print("No weather opportunities with > 5% edge found (or unable to fetch market data).")
-    for op in ops:
-        print(op)
+    engine = WeatherEngine()
+
+    # Show NWS forecasts
+    for city in engine.cities:
+        highs = engine.get_nws_forecast(city)
+        if highs:
+            for date, temp in sorted(highs.items())[:2]:
+                print(f"  {city} {date}: High {temp}°F")
+
+    # Find opportunities
+    opps = engine.find_opportunities()
+    print(f"\n  Found {len(opps)} weather opportunities")
+    for o in opps:
+        print(f"  {o['asset']}: {o['action']} | Edge: {o['edge']:.1f}% | {o['reasoning'][:80]}")
+        print(f"    → {o['kalshi_url']}")

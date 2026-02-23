@@ -1,10 +1,11 @@
 """
-Background Scanner — Compute-on-Write
-Runs ONCE from GitHub Actions (or locally). Fetches data, runs ML models,
-saves a Full Snapshot to Azure Blob (backtesting) and high-conviction
-opportunities to Azure Table (UI).
+Background Scanner — Multi-Engine Compute-on-Write
+Runs from GitHub Actions (or locally). Executes Weather + Macro engines first (real edge),
+then Quant engine (paper trading). All real-edge ops go through AI Validator.
 
-Structured for future expansion: Weather ML, FRED ML, etc.
+ARCHITECTURE:
+  Tier 1 (Real Edge): Weather Engine + Macro Engine → AI Validator → LiveOpportunities table
+  Tier 2 (Paper):     Quant Engine → PaperTradingSignals table (no AI validation)
 """
 
 import os
@@ -20,8 +21,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from azure.data.tables import TableClient
 from azure.storage.blob import BlobServiceClient
 
+from scripts.engines.weather_engine import WeatherEngine
+from scripts.engines.macro_engine import MacroEngine
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features
+from src.discord_notifier import DiscordNotifier
 from scripts.engines.quant_engine import (
     load_model,
     predict_next_hour,
@@ -30,9 +34,7 @@ from scripts.engines.quant_engine import (
     kelly_criterion,
 )
 from src.kalshi_feed import get_real_kalshi_markets
-from src.ai_validator import scrutinize_trade
-from scripts.engines.macro_engine import calculate_macro_edge
-from scripts.engines.weather_engine import calculate_weather_edge
+from src.ai_validator import AIValidator
 import pandas as pd
 
 # ─── Environment ─────────────────────────────────────────────────────
@@ -43,24 +45,58 @@ if not CONN_STR:
     print("❌ AZURE_CONNECTION_STRING not set. Exiting.")
     sys.exit(1)
 
-# Edge threshold — matches existing scan_quant() logic (abs(edge) > 5)
 EDGE_THRESHOLD = 5.0
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 1. QUANT ML SCANNER  (Heavy — runs in background)
+# TIER 1: REAL EDGE — Weather + Macro
+# ═════════════════════════════════════════════════════════════════════
+
+def scan_real_edge():
+    """
+    Run Weather and Macro engines.
+    Returns raw math-based opportunities (NO AI validation — that's on-demand in UI).
+    """
+    all_ops = []
+
+    # ── Weather Engine (fetches KXHIGHNY, KXHIGHCHI, KXHIGHMIA) ──
+    print("\n⛈️ Running Weather Engine...")
+    try:
+        weather_engine = WeatherEngine()
+        weather_ops = weather_engine.find_opportunities()
+        print(f"  Found {len(weather_ops)} weather opportunities")
+        all_ops.extend(weather_ops)
+    except Exception as e:
+        print(f"  ⚠️ Weather Engine failed: {e}")
+
+    # ── Macro Engine (fetches KXLCPIMAXYOY, KXFED, KXGDPYEAR, etc) ──
+    print("\n🏛️ Running Macro Engine...")
+    try:
+        macro_engine = MacroEngine()
+        macro_ops = macro_engine.find_opportunities()
+        print(f"  Found {len(macro_ops)} macro opportunities")
+        all_ops.extend(macro_ops)
+    except Exception as e:
+        print(f"  ⚠️ Macro Engine failed: {e}")
+
+    print(f"\n📊 Total real-edge opportunities: {len(all_ops)} (AI validation available on-demand in UI)")
+    return all_ops
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TIER 2: PAPER TRADING — Quant ML
 # ═════════════════════════════════════════════════════════════════════
 
 def scan_quant_ml():
     """
-    Mirrors HybridScanner.scan_quant() but decoupled from Streamlit.
-    Returns (snapshot_records, ui_opportunities).
+    Quant ML scanner for SPX/Nasdaq/BTC/ETH.
+    Returns (snapshot_records, paper_opportunities).
+    ⚠️ PAPER TRADING ONLY - no AI validation needed.
     """
     tickers = ["SPX", "Nasdaq", "BTC", "ETH"]
     snapshot_records = []
-    ui_opportunities = []
+    paper_opportunities = []
 
-    # ── Fetch price data + model predictions (once per asset) ──
     data_cache = {}
     for ticker in tickers:
         try:
@@ -74,27 +110,22 @@ def scan_quant_ml():
                 vol = get_market_volatility(df, window=24)
 
                 data_cache[ticker] = {
-                    "df": df,
-                    "model": model,
-                    "vol": vol,
-                    "price": curr_price,
-                    "pred": pred_val,
+                    "df": df, "model": model, "vol": vol,
+                    "price": curr_price, "pred": pred_val,
                 }
-                print(f"  ✅ {ticker}: Price={curr_price:.2f}, Pred={pred_val:.2f}, Vol={vol:.6f}")
+                print(f"    ✅ {ticker}: Price={curr_price:.2f}, Pred={pred_val:.2f}, Vol={vol:.6f}")
         except Exception as e:
-            print(f"  ⚠️ Skipping {ticker}: {e}")
+            print(f"    ⚠️ Skipping {ticker}: {e}")
 
-    # ── Fetch Kalshi markets per ticker and analyze ──
     for ticker in tickers:
         if ticker not in data_cache:
             continue
 
         d = data_cache[ticker]
         markets, method, debug = get_real_kalshi_markets(ticker)
-        print(f"  📡 {ticker}: {len(markets)} markets via {method}")
+        print(f"    📡 {ticker}: {len(markets)} markets via {method}")
 
         for m in markets:
-            # Parse strike from title (same regex as scan_quant)
             try:
                 strike_match = re.search(r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)', m.get('title', ''))
                 if not strike_match:
@@ -103,7 +134,6 @@ def scan_quant_ml():
             except Exception:
                 continue
 
-            # Hours left until expiration
             hours_left = 1.0
             exp_str = m.get('expiration')
             if exp_str:
@@ -115,52 +145,35 @@ def scan_quant_ml():
                 except Exception:
                     pass
 
-            # Direction
             title = m.get('title', '')
             is_above = ">" in title or "above" in title.lower()
-
-            # Probability via Black-Scholes + ML drift
             my_prob = calculate_probability(d['price'], d['pred'], strike, d['vol'], hours_left)
             if not is_above:
                 my_prob = 100 - my_prob
 
-            # Market price (Kalshi uses cents 0-100)
             yes_ask = m.get('yes_ask', 0)
             edge = my_prob - yes_ask
-
-            # Kelly sizing
             bet_size = kelly_criterion(my_prob, yes_ask, bankroll=20, fractional=0.25)
 
-            # ── Snapshot record (ALWAYS saved — avoids survivorship bias) ──
             record = {
-                "ticker": ticker,
-                "market_title": title,
-                "market_id": m.get('market_id', ''),
-                "strike": strike,
-                "expiration": exp_str,
-                "current_price": round(d['price'], 2),
-                "model_pred": round(d['pred'], 2),
-                "volatility": round(d['vol'], 6),
-                "hours_left": round(hours_left, 1),
-                "model_prob": round(my_prob, 2),
-                "market_yes_ask": yes_ask,
-                "calculated_edge": round(edge, 2),
+                "ticker": ticker, "market_title": title,
+                "market_id": m.get('market_id', ''), "strike": strike,
+                "expiration": exp_str, "current_price": round(d['price'], 2),
+                "model_pred": round(d['pred'], 2), "volatility": round(d['vol'], 6),
+                "hours_left": round(hours_left, 1), "model_prob": round(my_prob, 2),
+                "market_yes_ask": yes_ask, "calculated_edge": round(edge, 2),
                 "kelly_bet": round(bet_size, 2),
             }
             snapshot_records.append(record)
 
-            # ── UI opportunity (only high conviction) ──
             if abs(edge) > EDGE_THRESHOLD and bet_size > 0:
                 action = "BUY YES" if edge > 0 else "BUY NO"
-                ui_op = {
-                    "PartitionKey": "Live",
+                paper_opportunities.append({
+                    "PartitionKey": "Paper",
                     "RowKey": f"{ticker}_{m.get('market_id', strike)}".replace(" ", ""),
-                    "Asset": ticker,
-                    "Market": title[:200],
-                    "Strike": str(strike),
+                    "Asset": ticker, "Market": title[:200], "Strike": str(strike),
                     "Confidence": float(round(my_prob, 1)),
-                    "Edge": float(round(edge, 1)),
-                    "Action": action,
+                    "Edge": float(round(edge, 1)), "Action": action,
                     "KellySuggestion": float(round(bet_size, 2)),
                     "CurrentPrice": float(round(d['price'], 2)),
                     "ModelPred": float(round(d['pred'], 2)),
@@ -169,117 +182,119 @@ def scan_quant_ml():
                     "MarketYesAsk": int(yes_ask),
                     "Expiration": exp_str or "",
                     "MarketId": m.get('market_id', ''),
-                }
-                ui_opportunities.append(ui_op)
+                    "Status": "PAPER TRADE ONLY",
+                    "Engine": "Quant",
+                })
 
-    return snapshot_records, ui_opportunities
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 2. FUTURE: Weather ML  (uncomment when weather model is trained)
-# ═════════════════════════════════════════════════════════════════════
-# def scan_weather_ml():
-#     """Move weather arb to background when ML is added."""
-#     pass
-
-# ═════════════════════════════════════════════════════════════════════
-# 3. FUTURE: Macro/FRED ML
-# ═════════════════════════════════════════════════════════════════════
-# def scan_macro_models():
-#     """Move FRED analysis to background when ML is added."""
-#     pass
+    return snapshot_records, paper_opportunities
 
 
 # ═════════════════════════════════════════════════════════════════════
-# MAIN — Orchestrator
+# MAIN ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════════
 
-def run_snapshot_logic():
-    """Run all background scans, save to Azure Blob + Table."""
+def run_scan():
+    """Main scanning logic — prioritizes real edge markets."""
     now = datetime.now(timezone.utc)
-    print(f"🚀 Starting Background Scan at {now.isoformat()}")
+    print(f"🚀 Starting Multi-Engine Scan at {now.isoformat()}")
 
     # ── Initialize Azure clients ──
     blob_service = BlobServiceClient.from_connection_string(CONN_STR)
-    table_client = TableClient.from_connection_string(CONN_STR, "CurrentOpportunities")
+    live_table = TableClient.from_connection_string(CONN_STR, "LiveOpportunities")
+    paper_table = TableClient.from_connection_string(CONN_STR, "PaperTradingSignals")
 
-    # Create containers/tables if missing
+    for table in [live_table, paper_table]:
+        try:
+            table.create_table()
+        except Exception:
+            pass
     try:
         blob_service.create_container("market-snapshots")
     except Exception:
         pass
+
+    # ══════════════ TIER 1: REAL EDGE ══════════════
+    # Engines fetch their own Kalshi markets via series_ticker (fastest method)
+    # AI validation is ON-DEMAND in the Streamlit UI (avoids rate limits)
+    real_edge_ops = scan_real_edge()
+
+    # ── Discord Alerts (for high-conviction trades) ──
     try:
-        table_client.create_table()
-    except Exception:
-        pass
+        notifier = DiscordNotifier()
+        if notifier.is_enabled():
+            notifier.send_alert(real_edge_ops, min_edge=30.0)
+    except Exception as e:
+        print(f"  ⚠️ Discord alert failed: {e}")
 
-    # ── Run scans ──
-    print("\n🧠 Running Quant ML (Paper Trading Lab)...")
-    snapshot_records, ui_opportunities = scan_quant_ml()
+    # ══════════════ TIER 2: PAPER TRADING ══════════════
+    print("\n🧪 Running Quant Engine (Paper Trading)...")
+    snapshot_records, paper_ops = scan_quant_ml()
+    print(f"  Found {len(paper_ops)} quant signals (EDUCATIONAL ONLY)")
 
-    # Process Paper Trading Opportunities (Quant ML)
-    # The quant ML is now explicitly paper trade only as per the architecture
-    for op in ui_opportunities:
-        op['PartitionKey'] = "QUANT_ENGINE"
-        op['Status'] = "PAPER TRADE ONLY"
-
-    print("\n🌍 Running Macro Engine...")
-    macro_ops = calculate_macro_edge()
-    for op in macro_ops:
-        print(f"  Scrutinizing Macro Trade: {op['MarketTicker']}...")
-        approved, reasoning = scrutinize_trade(op)
-        if approved:
-            print(f"  ✅ AI APPROVED: {reasoning}")
-            op['AI_Reasoning'] = reasoning
-            op['Status'] = "AI APPROVED"
-            ui_opportunities.append(op)
-        else:
-            print(f"  ❌ AI REJECTED: {reasoning}")
-
-    print("\n⛈️ Running Weather Engine...")
-    weather_ops = calculate_weather_edge()
-    for op in weather_ops:
-        print(f"  Scrutinizing Weather Trade: {op['MarketTicker']}...")
-        approved, reasoning = scrutinize_trade(op)
-        if approved:
-            print(f"  ✅ AI APPROVED: {reasoning}")
-            op['AI_Reasoning'] = reasoning
-            op['Status'] = "AI APPROVED"
-            ui_opportunities.append(op)
-        else:
-            print(f"  ❌ AI REJECTED: {reasoning}")
-
-    # ── Save Full Snapshot to Blob (Historical / Backtesting) ──
+    # ── Save snapshot to Blob ──
     full_snapshot = {
         "timestamp_utc": now.isoformat(),
         "markets_analyzed": len(snapshot_records),
-        "opportunities_found": len(ui_opportunities),
+        "live_opportunities": len(real_edge_ops),
+        "paper_signals": len(paper_ops),
         "records": snapshot_records,
     }
     blob_name = f"snapshot_{now.strftime('%Y%m%d_%H%M%S')}.json"
     blob_client = blob_service.get_blob_client(container="market-snapshots", blob=blob_name)
     blob_client.upload_blob(json.dumps(full_snapshot, default=str), overwrite=True)
-    print(f"✅ Saved full snapshot: {blob_name} ({len(snapshot_records)} markets)")
+    print(f"\n✅ Saved snapshot: {blob_name} ({len(snapshot_records)} markets)")
 
-    # ── Update Azure Table for UI (Live View) ──
-    # Clear stale entries from both engines
+    # ── Update LiveOpportunities table ──
     try:
-        entities = table_client.query_entities("PartitionKey eq 'QUANT_ENGINE' or PartitionKey eq 'MACRO_ENGINE' or PartitionKey eq 'WEATHER_ENGINE'")
-        for e in entities:
-            table_client.delete_entity(e['PartitionKey'], e['RowKey'])
+        for e in live_table.query_entities("PartitionKey eq 'Live'"):
+            live_table.delete_entity(e['PartitionKey'], e['RowKey'])
     except Exception:
         pass
 
-    # Upload new opportunities
-    for op in ui_opportunities:
+    for opp in real_edge_ops:
         try:
-            table_client.create_entity(op)
+            row_key = opp.get('market_ticker', f"{opp.get('engine', 'UNK')}_{opp.get('asset', 'UNK')}_{now.strftime('%H%M%S')}")
+            row_key = row_key.replace('/', '_').replace('\\', '_').replace('#', '_').replace('?', '_')
+            entity = {
+                "PartitionKey": "Live",
+                "RowKey": row_key,
+                "Engine": opp.get('engine', ''),
+                "Asset": opp.get('asset', ''),
+                "Market": str(opp.get('market_title', ''))[:200],
+                "Action": opp.get('action', ''),
+                "Edge": float(opp.get('edge', 0)),
+                "Confidence": float(opp.get('confidence', 0)),
+                "Reasoning": str(opp.get('reasoning', ''))[:500],
+                "DataSource": opp.get('data_source', ''),
+                "AIValidated": False,  # On-demand in UI
+                "KalshiUrl": opp.get('kalshi_url', ''),
+                "MarketTicker": opp.get('market_ticker', ''),
+                "MarketDate": opp.get('market_date', ''),
+                "Expiration": opp.get('expiration', ''),
+            }
+            live_table.create_entity(entity)
         except Exception as e:
-            print(f"  ⚠️ Failed to upsert {op.get('RowKey')}: {e}")
+            print(f"  ⚠️ Failed to save live op: {e}")
 
-    print(f"✅ Updated Azure Table with {len(ui_opportunities)} high-conviction opportunities")
-    print(f"🏁 Scan complete at {datetime.now(timezone.utc).isoformat()}")
+    print(f"✅ Saved {len(real_edge_ops)} math-based opportunities to LiveOpportunities (AI on-demand in UI)")
+
+    # ── Update PaperTradingSignals table ──
+    try:
+        for e in paper_table.query_entities("PartitionKey eq 'Paper'"):
+            paper_table.delete_entity(e['PartitionKey'], e['RowKey'])
+    except Exception:
+        pass
+
+    for op in paper_ops:
+        try:
+            paper_table.create_entity(op)
+        except Exception as e:
+            print(f"  ⚠️ Failed to save paper op: {e}")
+
+    print(f"✅ Saved {len(paper_ops)} quant signals to PaperTradingSignals")
+
+    print(f"\n🏁 Scan complete at {datetime.now(timezone.utc).isoformat()}")
 
 
 if __name__ == "__main__":
-    run_snapshot_logic()
+    run_scan()
