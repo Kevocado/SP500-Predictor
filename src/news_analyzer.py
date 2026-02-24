@@ -16,11 +16,13 @@ class NewsAnalyzer:
 
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
+        self.model = None
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not found in environment.")
+            print("⚠️ GEMINI_API_KEY not found in environment. News analysis will be skipped.")
+            return
         
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
     def get_general_sentiment(self, vix_value, macro_news_snippets):
         """
@@ -40,6 +42,9 @@ class NewsAnalyzer:
             "summary": "One sentence summary."
         }}
         """
+        if not getattr(self, "model", None):
+            return {"heat_score": 0, "label": "Neutral", "vix_contribution": 0, "news_contribution": 0, "summary": "Sentiment engine offline (No API Key)."}
+        
         try:
             response = self.model.generate_content(prompt)
             text = response.text
@@ -92,6 +97,14 @@ class NewsAnalyzer:
             "reasoning": "One sentence quantitative explanation."
         }}
         """
+
+        if not self.model:
+            return {
+                "adjusted_prob": current_prob,
+                "impact_score": 0,
+                "sentiment": "Neutral",
+                "reasoning": "Gemini API key missing, skipped news analysis."
+            }
 
         try:
             response = self.model.generate_content(prompt)
