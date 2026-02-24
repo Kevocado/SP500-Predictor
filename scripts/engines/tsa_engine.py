@@ -35,22 +35,20 @@ class TSAEngine:
         """Finds edges in Kalshi TSA markets."""
         opportunities = []
         
-        # 1. Fetch TSA historical data
+        # 1. Fetch TSA historical data FIRST (fast-fail: avoids expensive market scan)
         tsa_df = self.fetch_tsa_data()
         if tsa_df is None or tsa_df.empty:
             return []
 
         # 2. Extract recent throughput
         try:
-            # Assuming first row is most recent
             recent_count = str(tsa_df.iloc[0, 1]).replace(',', '')
             recent_val = int(recent_count)
-            # Calculate 7-day average for trend
             ma_7d = tsa_df.iloc[:7, 1].replace(',', '', regex=True).astype(int).mean()
         except Exception:
             return []
 
-        # 3. Get Kalshi markets (Broad scan for Transportation)
+        # 3. Get Kalshi markets ONLY after data is confirmed available
         all_m = get_all_active_markets()
         markets = [m for m in all_m if m.get('category') == 'World' or 'TSA' in m.get('title', '').upper()]
         if not markets:

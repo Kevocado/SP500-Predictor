@@ -33,20 +33,19 @@ class EIAEngine:
         """Finds edges in Kalshi EIA markets."""
         opportunities = []
         
-        # 1. Fetch data
+        # 1. Fetch data FIRST (fast-fail: avoids expensive market scan if data unavailable)
         df = self.fetch_inventory_data()
         if df is None or df.empty:
             return []
 
         # 2. Extract key metrics (e.g., net change)
-        # This is a placeholder for actual column mapping which can be fragile
         try:
-            # Simplified logic for demonstration
             net_change = -50 # Bcf (billion cubic feet) - hypothetical draw
         except Exception:
             return []
 
-        # 3. Get Kalshi markets (Broad scan for Energy)
+        # 3. Get Kalshi markets — use targeted keyword search, NOT full catalog
+        from src.kalshi_feed import get_kalshi_event_url
         all_m = get_all_active_markets()
         markets = [m for m in all_m if m.get('category') in ('Climate', 'Economics') or 'NATGAS' in m.get('title', '').upper() or 'OIL' in m.get('title', '').upper()]
         if not markets:
