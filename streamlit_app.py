@@ -31,7 +31,7 @@ def ensure_models_exist():
             try:
                 # This downloads and caches it in ~/.cache/huggingface/hub/
                 # ensuring ultra-fast loading for quant_engine.py
-                hf_hub_download(repo_id=repo_id, filename=filename)
+                hf_hub_download(repo_id=repo_id, filename=filename, token=os.getenv("HF_TOKEN"))
             except Exception as e:
                 pass # Non-fatal, engines have their own fallback logic
 

@@ -45,4 +45,7 @@ jobs:
 
           # Gemini (AI Validator)
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+          # Hugging Face (Model Downloads)
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/background_scanner.py

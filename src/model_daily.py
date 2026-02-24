@@ -139,7 +139,7 @@ def load_daily_model(ticker="SPX"):
     try:
         from huggingface_hub import hf_hub_download
         # Download and cache the latest model from HF
-        cached_path = hf_hub_download(repo_id=repo_id, filename=filename)
+        cached_path = hf_hub_download(repo_id=repo_id, filename=filename, token=os.getenv("HF_TOKEN"))
         return joblib.load(cached_path)
     except Exception as e:
         print(f"HF Hub Pull Failed for {ticker} (Daily): {e}")

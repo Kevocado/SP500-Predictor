@@ -30,7 +30,7 @@ def get_hf_path(filename):
     local_path = os.path.join(MODEL_DIR, os.path.basename(filename))
     try:
         from huggingface_hub import hf_hub_download
-        return hf_hub_download(repo_id=repo_id, filename=filename)
+        return hf_hub_download(repo_id=repo_id, filename=filename, token=os.getenv("HF_TOKEN"))
     except Exception as e:
         print(f"HF Hub Pull Failed for {filename}: {e}")
         if os.path.exists(local_path):
