@@ -795,30 +795,53 @@ with tab_screener:
     st.markdown("---")
     try:
         from src.news_analyzer import NewsAnalyzer
-        from scripts.engines.macro_engine import MacroEngine
         
-        @st.cache_data(ttl=86400) # Cache for 1 day
+        @st.cache_data(ttl=86400)  # Cache for 1 day
         def get_ai_sentiment_cache():
-            me = MacroEngine()
-            cpi = me.get_latest_cpi_yoy()
-            fed = me.get_fed_rate_prediction()
-            gdp = me.get_gdp_prediction()
-            unemp = me.get_unemployment_rate()
+            snippets = []
+            # Try FRED data (optional — sentiment works without it)
+            try:
+                from scripts.engines.macro_engine import MacroEngine
+                me = MacroEngine()
+                cpi = me.get_latest_cpi_yoy()
+                fed = me.get_fed_rate_prediction()
+                gdp = me.get_gdp_prediction()
+                unemp = me.get_unemployment_rate()
+                if cpi is not None: snippets.append(f"Latest CPI YoY: {cpi}%")
+                if fed is not None: snippets.append(f"Fed Funds Rate: {fed}%")
+                if gdp is not None: snippets.append(f"GDP Growth: {gdp}%")
+                if unemp is not None: snippets.append(f"Unemployment: {unemp}%")
+            except Exception as fred_err:
+                snippets.append(f"FRED data unavailable ({fred_err})")
             
-            snippets = [
-                f"Latest FRED CPI: {cpi}%",
-                f"Latest FRED Fed Rate: {fed}%",
-                f"Latest FRED GDP Growth: {gdp}%",
-                f"Latest FRED Unemployment: {unemp}%"
-            ]
+            if not snippets:
+                snippets = ["No macro data available. Provide a general market outlook."]
+            
             analyzer = NewsAnalyzer()
             return analyzer.get_general_sentiment(vix_value=15.0, macro_news_snippets=snippets)
-            
+        
         sentiment = get_ai_sentiment_cache()
         if sentiment:
-            st.info(f"🧠 **Daily AI Market Sentiment ({sentiment.get('label', 'Neutral')})** - {sentiment.get('summary', '')}")
+            label = sentiment.get('label', 'Neutral')
+            summary = sentiment.get('summary', '')
+            heat = sentiment.get('heat_score', 0)
+            
+            # Color-coded sentiment badge
+            if heat > 20:
+                color = "#3fb950"  # green
+            elif heat < -20:
+                color = "#f85149"  # red
+            else:
+                color = "#d29922"  # amber
+            
+            st.markdown(f"""
+            <div style="padding: 12px 16px; border-left: 4px solid {color}; background: rgba(255,255,255,0.03); border-radius: 6px; margin-bottom: 12px;">
+                <strong style="font-size: 1.05em;">🧠 Daily AI Market Sentiment — <span style="color:{color}">{label}</span></strong>
+                <p style="margin: 6px 0 0; color: #8b949e; font-size: 0.95em;">{summary}</p>
+            </div>
+            """, unsafe_allow_html=True)
     except Exception as e:
-        pass
+        st.warning(f"🧠 AI Sentiment unavailable: {e}")
 
 
     # --- WEATHER ARBITRAGE ---

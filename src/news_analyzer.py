@@ -54,8 +54,9 @@ class NewsAnalyzer:
             start = text.find('{')
             end = text.rfind('}') + 1
             return json.loads(text[start:end])
-        except Exception:
-            return {"heat_score": 0, "label": "Neutral", "vix_contribution": 0, "news_contribution": 0, "summary": "Sentiment engine offline."}
+        except Exception as e:
+            print(f"  ⚠️ Gemini sentiment error: {e}")
+            return {"heat_score": 0, "label": "Neutral", "vix_contribution": 0, "news_contribution": 0, "summary": f"Gemini API error: {e}"}
 
     def analyze_event_impact(self, ticker, title, current_prob, news_snippets):
         """
