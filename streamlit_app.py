@@ -1,7 +1,7 @@
 """
-Kalshi Edge Finder — v7 (4-Tab Architecture)
-Tabs: My Portfolio → Quant Lab → Weather Markets → Macro Markets
-Execution: Human-in-the-Loop via Telegram (Kalshi API is read-only)
+Kalshi Edge Finder — v8 (Premium Dark Terminal)
+6-Tab Layout: Portfolio → Quant Lab → Weather → Macro → Backtesting → Quant Glossary
+Execution: Human-in-the-Loop via Telegram | Weather auto-sell via NWS settlement
 """
 
 import streamlit as st
@@ -18,13 +18,9 @@ load_dotenv()
 
 # ─── AUTO-PULL MODELS FROM HF HUB ─────────────────────────────
 def ensure_models_exist():
-    """Milestone: Automated Sync. Pre-warms the Hugging Face cache for all active models."""
     REPO_ID = "Kevocado/sp500-predictor-models"
-    MODEL_FILES = [
-        "lgbm_model_SPX.pkl", "features_SPX.pkl",
-        "lgbm_model_Nasdaq.pkl", "features_Nasdaq.pkl",
-    ]
-    for f in MODEL_FILES:
+    for f in ["lgbm_model_SPX.pkl", "features_SPX.pkl",
+              "lgbm_model_Nasdaq.pkl", "features_Nasdaq.pkl"]:
         try:
             hf_hub_download(repo_id=REPO_ID, filename=f, cache_dir="model", force_filename=f)
         except Exception:
@@ -33,10 +29,9 @@ def ensure_models_exist():
 ensure_models_exist()
 
 
-# ─── HELPER FUNCTIONS ──────────────────────────────────────────
+# ─── HELPERS ───────────────────────────────────────────────────
 
 def parse_kalshi_ticker(ticker):
-    """Translates a Kalshi ticker into plain English."""
     import re
     city_map = {"NY": "NYC", "CHI": "Chicago", "MIA": "Miami"}
     m = re.match(r'KX(\w+?)(NY|CHI|MIA)-(\d{2})([A-Z]{3})(\d{2})-([AB])([\d.]+)', ticker)
@@ -53,42 +48,30 @@ def parse_kalshi_ticker(ticker):
             "KXGDPYEAR": "GDP", "KXRECSSNBER": "Recession",
             "KXFEDDECISION": "Fed Decision", "KXU3MAX": "Unemployment",
         }
-        name = series_map.get(series, series)
-        return f"{name}: {contract}"
+        return f"{series_map.get(series, series)}: {contract}"
     return ticker
 
 
-# ─── DATA FETCHING ─────────────────────────────────────────────
+# ─── DATA LAYER ────────────────────────────────────────────────
 
 @st.cache_data(ttl=30)
 def fetch_opportunities():
-    """Reads from Supabase (primary) or Azure Tables (fallback)."""
     live_opps, paper_opps, last_update = [], [], None
-
-    # Try Supabase first
     try:
         from src.supabase_client import get_latest_opportunities
         rows = get_latest_opportunities(limit=100)
         if rows:
             for r in rows:
                 entry = {
-                    'Engine': r.get('engine', ''),
-                    'Asset': r.get('asset', ''),
-                    'Market': r.get('market_title', ''),
-                    'MarketTicker': r.get('market_ticker', ''),
-                    'EventTicker': r.get('event_ticker', ''),
-                    'Action': r.get('action', ''),
-                    'ModelProb': r.get('model_prob', 0),
-                    'MarketPrice': r.get('market_price', 0),
-                    'Edge': r.get('edge', 0),
-                    'Reasoning': r.get('reasoning', ''),
-                    'DataSource': r.get('data_source', ''),
-                    'KalshiURL': r.get('kalshi_url', ''),
-                    'MarketDate': r.get('market_date', ''),
-                    'Expiration': r.get('expiration', ''),
+                    'Engine': r.get('engine', ''), 'Asset': r.get('asset', ''),
+                    'Market': r.get('market_title', ''), 'MarketTicker': r.get('market_ticker', ''),
+                    'EventTicker': r.get('event_ticker', ''), 'Action': r.get('action', ''),
+                    'ModelProb': r.get('model_prob', 0), 'MarketPrice': r.get('market_price', 0),
+                    'Edge': r.get('edge', 0), 'Reasoning': r.get('reasoning', ''),
+                    'DataSource': r.get('data_source', ''), 'KalshiURL': r.get('kalshi_url', ''),
+                    'MarketDate': r.get('market_date', ''), 'Expiration': r.get('expiration', ''),
                 }
-                eng = entry['Engine'].lower()
-                if eng in ('weather', 'macro', 'tsa', 'eia'):
+                if entry['Engine'].lower() in ('weather', 'macro', 'tsa', 'eia'):
                     live_opps.append(entry)
                 else:
                     paper_opps.append(entry)
@@ -96,214 +79,188 @@ def fetch_opportunities():
             return live_opps, paper_opps, last_update
     except Exception:
         pass
-
-    # Fallback to Azure
+    # Azure fallback
     try:
         from azure.data.tables import TableClient
         conn_str = os.getenv("AZURE_CONNECTION_STRING", "").strip('"')
         if not conn_str:
             return [], [], None
         try:
-            live_client = TableClient.from_connection_string(conn_str, "LiveOpportunities")
-            live_entities = list(live_client.query_entities(""))
-            live_entities.sort(key=lambda x: float(x.get('Edge', 0)), reverse=True)
-            live_opps = live_entities
+            lc = TableClient.from_connection_string(conn_str, "LiveOpportunities")
+            live_opps = sorted(list(lc.query_entities("")), key=lambda x: float(x.get('Edge', 0)), reverse=True)
         except Exception:
             pass
         try:
-            paper_client = TableClient.from_connection_string(conn_str, "PaperTradingSignals")
-            paper_entities = list(paper_client.query_entities(""))
-            paper_entities.sort(key=lambda x: float(x.get('Edge', 0)), reverse=True)
-            paper_opps = paper_entities
+            pc = TableClient.from_connection_string(conn_str, "PaperTradingSignals")
+            paper_opps = sorted(list(pc.query_entities("")), key=lambda x: float(x.get('Edge', 0)), reverse=True)
         except Exception:
             pass
-
-        all_entities = live_opps + paper_opps
-        if all_entities:
-            ts = all_entities[0].get('_metadata', {}).get('timestamp') or all_entities[0].get('Timestamp')
-            if ts:
-                last_update = ts.strftime("%H:%M UTC") if not isinstance(ts, str) else pd.to_datetime(ts).strftime("%H:%M UTC")
-            else:
-                last_update = datetime.now(timezone.utc).strftime("%H:%M UTC")
+        all_e = live_opps + paper_opps
+        if all_e:
+            ts = all_e[0].get('_metadata', {}).get('timestamp') or all_e[0].get('Timestamp')
+            last_update = (ts.strftime("%H:%M UTC") if not isinstance(ts, str) else pd.to_datetime(ts).strftime("%H:%M UTC")) if ts else datetime.now(timezone.utc).strftime("%H:%M UTC")
         return live_opps, paper_opps, last_update
     except Exception:
         return [], [], None
 
 
 def run_ai_validation(sig):
-    """Run on-demand AI validation for a single trade."""
     try:
         from src.ai_validator import AIValidator
-        validator = AIValidator()
-        opp = {
-            'engine': sig.get('Engine', 'Unknown'),
-            'asset': sig.get('Asset', ''),
-            'market_title': sig.get('Market', ''),
-            'action': sig.get('Action', ''),
-            'edge': float(sig.get('Edge', 0)),
-            'reasoning': sig.get('Reasoning', ''),
-            'data_source': sig.get('DataSource', ''),
-        }
-        return validator.validate_trade(opp)
+        v = AIValidator()
+        opp = {'engine': sig.get('Engine', ''), 'asset': sig.get('Asset', ''),
+               'market_title': sig.get('Market', ''), 'action': sig.get('Action', ''),
+               'edge': float(sig.get('Edge', 0)), 'reasoning': sig.get('Reasoning', ''),
+               'data_source': sig.get('DataSource', '')}
+        return v.validate_trade(opp)
     except Exception as e:
-        return {'approved': None, 'ai_reasoning': f'Error: {e}', 'confidence': 0, 'error': str(e)}
+        return {'approved': None, 'ai_reasoning': f'Error: {e}', 'confidence': 0}
+
+
+@st.cache_data(ttl=86400)
+def get_ai_sentiment_cache():
+    snippets = []
+    try:
+        from scripts.engines.macro_engine import MacroEngine
+        me = MacroEngine()
+        for label, fn in [("CPI YoY", me.get_latest_cpi_yoy), ("Fed Rate", me.get_fed_rate_prediction),
+                          ("GDP Growth", me.get_gdp_prediction), ("Unemployment", me.get_unemployment_rate)]:
+            try:
+                v = fn()
+                if v is not None:
+                    snippets.append(f"{label}: {v}%")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if not snippets:
+        snippets = ["No macro data available."]
+    try:
+        from src.news_analyzer import NewsAnalyzer
+        return NewsAnalyzer().get_general_sentiment(vix_value=15.0, macro_news_snippets=snippets)
+    except Exception:
+        return {"heat_score": 0, "label": "Neutral", "summary": "Sentiment engine offline."}
 
 
 def get_macro_data():
-    """Fetch VIX and Yield Curve from external sources. Cached."""
     data = {'vix': 20, 'yield_curve': 0}
     try:
         from src.sentiment import SentimentAnalyzer
-        sa = SentimentAnalyzer()
-        vix = sa.get_vix()
+        vix = SentimentAnalyzer().get_vix()
         if vix:
             data['vix'] = vix
     except Exception:
         pass
     try:
         import fredapi
-        fred_key = os.getenv('FRED_API_KEY', '').strip('"')
-        if fred_key:
-            fred = fredapi.Fred(api_key=fred_key)
-            t10y2y = fred.get_series('T10Y2Y', observation_start='2024-01-01')
-            if len(t10y2y) > 0:
-                data['yield_curve'] = round(t10y2y.iloc[-1], 2)
+        fk = os.getenv('FRED_API_KEY', '').strip('"')
+        if fk:
+            t = fredapi.Fred(api_key=fk).get_series('T10Y2Y', observation_start='2024-01-01')
+            if len(t) > 0:
+                data['yield_curve'] = round(t.iloc[-1], 2)
     except Exception:
         pass
     return data
 
 
-def calculate_annualized_ev(edge_pct, expiration_str):
-    """Calculates Annualized Expected Value."""
-    try:
-        exp_date = pd.to_datetime(expiration_str)
-        now = datetime.now(timezone.utc)
-        if exp_date.tzinfo is None:
-            exp_date = exp_date.replace(tzinfo=timezone.utc)
-        days_to_res = (exp_date - now).days
-        if days_to_res <= 0:
-            days_to_res = 1
-        return (edge_pct * 365) / days_to_res
-    except Exception:
-        return 0
-
-
-def render_grid(data, key_suffix, empty_msg="No matching opportunities found."):
-    """Renders high-density data grid using native st.dataframe."""
+def render_grid(data, key_suffix, empty_msg="No opportunities found."):
     if not data:
         st.info(empty_msg)
         return
-
     rows = []
     for item in data:
         if isinstance(item, dict):
-            edge = float(item.get('Edge', item.get('edge', 0)))
-            market_price = float(item.get('MarketPrice', item.get('market_price', 0)))
-            model_prob = float(item.get('ModelProb', item.get('model_prob', 0)))
-            action = item.get('Action', item.get('action', ''))
-            title = item.get('Market', item.get('market_title', ''))
-            engine = item.get('Engine', item.get('engine', ''))
-            reasoning = item.get('Reasoning', item.get('reasoning', ''))
-            kalshi_url = item.get('KalshiURL', item.get('kalshi_url', ''))
-            market_date = item.get('MarketDate', item.get('market_date', ''))
-
             rows.append({
-                'Engine': engine,
-                'Market': title[:60],
-                'Action': action,
-                'Edge %': round(edge, 1),
-                'Model Prob': round(model_prob, 1),
-                'Market ¢': round(market_price, 0),
-                'Date': market_date,
+                'Engine': item.get('Engine', item.get('engine', '')),
+                'Market': str(item.get('Market', item.get('market_title', '')))[:55],
+                'Action': item.get('Action', item.get('action', '')),
+                'Edge %': round(float(item.get('Edge', item.get('edge', 0))), 1),
+                'Model P': round(float(item.get('ModelProb', item.get('model_prob', 0))), 1),
+                'Price ¢': round(float(item.get('MarketPrice', item.get('market_price', 0))), 0),
+                'Date': item.get('MarketDate', item.get('market_date', '')),
             })
-
     if not rows:
         st.info(empty_msg)
         return
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values('Edge %', ascending=False)
+    df = pd.DataFrame(rows).sort_values('Edge %', ascending=False)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════════════
-# PAGE CONFIG
+# PAGE CONFIG & CSS
 # ═══════════════════════════════════════════════════════════════
 
-st.set_page_config(
-    page_title="Kalshi Edge Finder",
-    page_icon="⛈️",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Kalshi Edge Finder", page_icon="⛈️", layout="wide", initial_sidebar_state="collapsed")
 
-# ─── DARK THEME CSS ──────────────────────────────────────────────────
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    .stApp { font-family: 'Inter', sans-serif; background-color: #0d1117 !important; color: #e6edf3 !important; }
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+    /* ── Base ── */
+    .stApp { font-family: 'Inter', sans-serif; background: #0a0e17 !important; color: #c9d1d9 !important; }
     .stApp p, .stApp span, .stApp label, .stApp div, .stMarkdown, .stMarkdown p, .stMarkdown span,
-    [data-testid="stMetricValue"], [data-testid="stMetricLabel"], .stCaption, .stCaption p { color: #e6edf3 !important; }
+    [data-testid="stMetricValue"], [data-testid="stMetricLabel"], .stCaption, .stCaption p { color: #c9d1d9 !important; }
     [data-testid="stMetricDelta"] { color: #3fb950 !important; }
-    .stTabs [data-baseweb="tab-list"] { background: #161b22; border-radius: 8px; padding: 4px; }
-    .stTabs [data-baseweb="tab"] { color: #8b949e !important; background: transparent; }
-    .stTabs [aria-selected="true"] { color: #e6edf3 !important; background: #21262d !important; border-radius: 6px; }
-    .stButton > button { background: linear-gradient(135deg, #388bfd 0%, #a371f7 100%) !important; color: white !important; border: none !important; font-weight: 600; }
-    .stButton > button:hover { opacity: 0.85; }
-    .hero-header { background: linear-gradient(135deg, rgba(56, 139, 253, 0.1) 0%, rgba(163, 113, 247, 0.1) 100%); border: 1px solid rgba(56, 139, 253, 0.2); border-radius: 16px; padding: 24px 32px; margin-bottom: 24px; }
-    .hero-header h1 { background: linear-gradient(90deg, #388bfd, #a371f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2rem; font-weight: 700; margin: 0; }
-    .hero-header p { color: #8b949e !important; margin: 4px 0 0 0; }
-    .quant-card { background: linear-gradient(135deg, rgba(56, 139, 253, 0.08) 0%, rgba(100, 160, 255, 0.04) 100%); border: 1px solid rgba(56, 139, 253, 0.3); border-radius: 12px; padding: 16px 20px; margin-bottom: 12px; }
-    .edge-positive { color: #3fb950 !important; font-weight: 700; }
-    .edge-negative { color: #f85149 !important; font-weight: 700; }
-    .stat-pill { display: inline-block; background: rgba(56, 139, 253, 0.12); border: 1px solid rgba(56, 139, 253, 0.3); border-radius: 20px; padding: 4px 12px; font-size: 0.8rem; color: #388bfd !important; margin-right: 6px; }
-    .regime-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: 600; font-size: 0.85rem; }
-    .regime-bullish { background: rgba(63, 185, 80, 0.15); border: 1px solid rgba(63, 185, 80, 0.4); color: #3fb950 !important; }
-    .regime-bearish { background: rgba(248, 81, 73, 0.15); border: 1px solid rgba(248, 81, 73, 0.4); color: #f85149 !important; }
-    .regime-neutral { background: rgba(139, 148, 158, 0.15); border: 1px solid rgba(139, 148, 158, 0.4); color: #8b949e !important; }
-    .regime-greedy { background: rgba(210, 153, 34, 0.15); border: 1px solid rgba(210, 153, 34, 0.4); color: #d29922 !important; }
-    .regime-fearful { background: rgba(163, 113, 247, 0.15); border: 1px solid rgba(163, 113, 247, 0.4); color: #a371f7 !important; }
+
+    /* ── Tabs ── */
+    .stTabs [data-baseweb="tab-list"] { background: #111827; border-radius: 10px; padding: 4px; gap: 2px; border: 1px solid #1e293b; }
+    .stTabs [data-baseweb="tab"] { color: #6b7280 !important; background: transparent; font-size: 0.85rem; padding: 8px 16px; }
+    .stTabs [aria-selected="true"] { color: #e5e7eb !important; background: linear-gradient(135deg, #1e293b, #1a1f36) !important; border-radius: 8px; font-weight: 600; }
+
+    /* ── Buttons ── */
+    .stButton > button { background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%) !important; color: white !important; border: none !important; font-weight: 600; border-radius: 8px; transition: all 0.2s; }
+    .stButton > button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3); opacity: 0.95; }
+
+    /* ── Cards ── */
+    .quant-card { background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.9)); border: 1px solid #1e293b; border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; backdrop-filter: blur(8px); }
+    .quant-card:hover { border-color: #334155; }
+
+    /* ── Accent Colors ── */
+    .edge-positive { color: #34d399 !important; font-weight: 700; }
+    .edge-negative { color: #f87171 !important; font-weight: 700; }
+
+    /* ── Pills ── */
+    .stat-pill { display: inline-block; background: rgba(37, 99, 235, 0.12); border: 1px solid rgba(37, 99, 235, 0.25); border-radius: 20px; padding: 3px 12px; font-size: 0.78rem; color: #60a5fa !important; margin-right: 6px; font-family: 'JetBrains Mono', monospace; }
+
+    /* ── Regime Badges ── */
+    .regime-badge { display: inline-flex; align-items: center; gap: 8px; padding: 8px 20px; border-radius: 24px; font-weight: 600; font-size: 0.9rem; letter-spacing: 0.5px; }
+    .regime-bullish   { background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.3); color: #34d399 !important; }
+    .regime-bearish   { background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.3); color: #f87171 !important; }
+    .regime-neutral   { background: rgba(107, 114, 128, 0.15); border: 1px solid rgba(107, 114, 128, 0.35); color: #9ca3af !important; }
+    .regime-greedy    { background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); color: #fbbf24 !important; }
+    .regime-fearful   { background: rgba(167, 139, 250, 0.1); border: 1px solid rgba(167, 139, 250, 0.3); color: #a78bfa !important; }
+
+    /* ── AI Opinion Panel ── */
+    .ai-panel { background: linear-gradient(135deg, rgba(30, 41, 59, 0.6), rgba(15, 23, 42, 0.8)); border: 1px solid #1e293b; border-radius: 12px; padding: 16px 20px; margin-top: 8px; font-size: 0.88rem; color: #94a3b8 !important; line-height: 1.6; }
+
+    /* ── Hero ── */
+    .hero-wrap { background: linear-gradient(135deg, rgba(37, 99, 235, 0.06) 0%, rgba(124, 58, 237, 0.06) 100%); border: 1px solid rgba(37, 99, 235, 0.15); border-radius: 16px; padding: 28px 36px; margin-bottom: 20px; }
+    .hero-wrap h1 { background: linear-gradient(90deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 1.8rem; font-weight: 700; margin: 0; }
+    .hero-wrap p { color: #6b7280 !important; margin: 6px 0 0 0; font-size: 0.88rem; }
+
+    /* ── Metric Cards ── */
+    .metric-strip { display: flex; gap: 12px; margin: 16px 0; }
+    .metric-card { flex: 1; background: linear-gradient(135deg, #111827, #0f172a); border: 1px solid #1e293b; border-radius: 10px; padding: 14px 18px; text-align: center; }
+    .metric-card .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: #6b7280; margin-bottom: 4px; }
+    .metric-card .value { font-size: 1.4rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+    /* ── Weather Auto-Sell Box ── */
+    .auto-sell-box { background: linear-gradient(135deg, rgba(52, 211, 153, 0.06), rgba(16, 185, 129, 0.03)); border: 1px solid rgba(52, 211, 153, 0.2); border-radius: 12px; padding: 16px 20px; margin: 12px 0; }
+    .auto-sell-box h5 { color: #34d399 !important; margin: 0 0 8px 0; font-size: 0.95rem; }
+
+    /* ── Data table ── */
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── HERO HEADER + AI REGIME BADGE ───────────────────────────────────
-
-@st.cache_data(ttl=86400)
-def get_ai_sentiment_cache():
-    """Fetch AI market sentiment (cached 24h)."""
-    snippets = []
-    try:
-        from scripts.engines.macro_engine import MacroEngine
-        me = MacroEngine()
-        cpi = me.get_latest_cpi_yoy()
-        fed = me.get_fed_rate_prediction()
-        gdp = me.get_gdp_prediction()
-        unemp = me.get_unemployment_rate()
-        if cpi is not None: snippets.append(f"CPI YoY: {cpi}%")
-        if fed is not None: snippets.append(f"Fed Rate: {fed}%")
-        if gdp is not None: snippets.append(f"GDP Growth: {gdp}%")
-        if unemp is not None: snippets.append(f"Unemployment: {unemp}%")
-    except Exception as e:
-        snippets.append(f"FRED unavailable ({e})")
-
-    if not snippets:
-        snippets = ["No macro data available."]
-
-    try:
-        from src.news_analyzer import NewsAnalyzer
-        analyzer = NewsAnalyzer()
-        return analyzer.get_general_sentiment(vix_value=15.0, macro_news_snippets=snippets)
-    except Exception:
-        return {"heat_score": 0, "label": "Neutral", "summary": "Sentiment engine offline."}
-
+# ═══════════════════════════════════════════════════════════════
+# HEADER: Hero + AI Regime (always visible)
+# ═══════════════════════════════════════════════════════════════
 
 sentiment = get_ai_sentiment_cache()
-label = sentiment.get('label', 'Neutral')
-summary = sentiment.get('summary', '')
-heat = sentiment.get('heat_score', 0)
-
-# Map label to regime name and CSS class
+s_label = sentiment.get('label', 'Neutral')
+s_summary = sentiment.get('summary', '')
 regime_map = {
     'Bullish': ('ACCUMULATION', 'regime-bullish'),
     'Greedy': ('EUPHORIA', 'regime-greedy'),
@@ -311,108 +268,110 @@ regime_map = {
     'Fearful': ('CAPITULATION', 'regime-fearful'),
     'Neutral': ('RANGING', 'regime-neutral'),
 }
-regime_name, regime_css = regime_map.get(label, ('RANGING', 'regime-neutral'))
+regime_name, regime_css = regime_map.get(s_label, ('RANGING', 'regime-neutral'))
 
-# Header with inline regime badge
 hcol1, hcol2 = st.columns([3, 2])
 with hcol1:
     st.markdown("""
-    <div class="hero-header">
+    <div class="hero-wrap">
         <h1>⛈️ Kalshi Edge Finder</h1>
         <p>Weather Arbitrage • FRED Economics • ML Directional Prediction</p>
     </div>
     """, unsafe_allow_html=True)
-
 with hcol2:
     st.markdown(f"""
-    <div style="text-align: right; padding: 24px 16px 0 0;">
-        <span class="regime-badge {regime_css}">🧠 AI Regime: {regime_name}</span>
+    <div style="padding: 12px 0;">
+        <div style="text-align: right; margin-bottom: 10px;">
+            <span class="regime-badge {regime_css}">🧠 AI Regime: {regime_name}</span>
+        </div>
+        <div class="ai-panel">
+            {s_summary}
+        </div>
     </div>
     """, unsafe_allow_html=True)
-    with st.expander("Full AI Opinion"):
-        st.caption(summary)
 
-
-# ─── MARKET HEAT STRIP ──────────────────────────────────────────────
+# ── Market Heat Metrics ──
 macro_data = get_macro_data()
 vix = macro_data.get('vix', 20)
 yc = macro_data.get('yield_curve', 0)
-heat_score = ((vix - 15) * 5) - (yc * 50)
-heat_score = max(-100, min(100, heat_score))
-heat_color = "#f85149" if heat_score > 30 else ("#3fb950" if heat_score < -30 else "#d29922")
+heat = max(-100, min(100, ((vix - 15) * 5) - (yc * 50)))
+heat_color = "#f87171" if heat > 30 else ("#34d399" if heat < -30 else "#fbbf24")
 
-col_m1, col_m2, col_m3 = st.columns(3)
-col_m1.metric("VIX", f"{vix:.2f}")
-col_m2.metric("10Y-2Y", f"{yc:.2f}")
-col_m3.metric("Heat Score", f"{heat_score:.0f}")
+st.markdown(f"""
+<div class="metric-strip">
+    <div class="metric-card">
+        <div class="label">VIX</div>
+        <div class="value" style="color: {'#f87171' if vix > 25 else '#34d399'}">{vix:.1f}</div>
+    </div>
+    <div class="metric-card">
+        <div class="label">10Y-2Y Spread</div>
+        <div class="value" style="color: {'#f87171' if yc < 0 else '#34d399'}">{yc:+.2f}</div>
+    </div>
+    <div class="metric-card">
+        <div class="label">Heat Score</div>
+        <div class="value" style="color: {heat_color}">{heat:+.0f}</div>
+    </div>
+    <div class="metric-card">
+        <div class="label">Last Sync</div>
+        <div class="value" style="color: #60a5fa; font-size: 1rem;">{'—' if not (fetch_opportunities()[2]) else fetch_opportunities()[2]}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-
-# ─── FETCH DATA ──────────────────────────────────────────────────────
-live_opps, paper_opps, last_updated = fetch_opportunities()
-live_opps = live_opps or []
-paper_opps = paper_opps or []
-
-weather_opps = [o for o in live_opps if o.get('Engine', '').lower() == 'weather']
-macro_opps = [o for o in live_opps if o.get('Engine', '').lower() == 'macro']
-
-if st.button("🔄 Request New Scan", use_container_width=True):
-    st.toast("Scan requested. Updates arriving in ~30 seconds.", icon="⏳")
-    st.cache_data.clear()
-    import time
-    time.sleep(1)
-    st.rerun()
-
-st.markdown("---")
-
-# ─── DATA COVERAGE FOOTER ────────────────────────────────────────────
+# ── Data Coverage ──
 try:
     from src.supabase_client import get_wipe_date
-    wipe_date = get_wipe_date()
-    if wipe_date:
-        st.caption(f"📊 Historical Data Coverage: {wipe_date[:10]} → Present")
+    wd = get_wipe_date()
+    if wd:
+        st.caption(f"📊 Historical Data Coverage: {wd[:10]} → Present")
 except Exception:
     pass
 
+if st.button("🔄 Refresh Data", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+live_opps, paper_opps, last_updated = fetch_opportunities()
+live_opps = live_opps or []
+paper_opps = paper_opps or []
+weather_opps = [o for o in live_opps if o.get('Engine', '').lower() == 'weather']
+macro_opps = [o for o in live_opps if o.get('Engine', '').lower() == 'macro']
+
+st.markdown("---")
+
 
 # ═══════════════════════════════════════════════════════════════
-# 4-TAB LAYOUT
+# 6-TAB LAYOUT
 # ═══════════════════════════════════════════════════════════════
 
-tab_portfolio, tab_quant, tab_weather, tab_macro = st.tabs([
-    "📁 My Portfolio",
-    "🧪 Quant Lab (SPY/QQQ)",
-    "⛈️ Weather Markets",
-    "🏛️ Macro Markets",
+tab_port, tab_quant, tab_wx, tab_macro, tab_bt, tab_gloss = st.tabs([
+    "📁 Portfolio",
+    "🧪 Quant Lab",
+    "⛈️ Weather",
+    "🏛️ Macro",
+    "📊 Backtesting",
+    "📖 Quant Glossary",
 ])
 
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 1: MY PORTFOLIO
-# ═══════════════════════════════════════════════════════════════
-with tab_portfolio:
+# ═══════════════════════ TAB 1: PORTFOLIO ═════════════════════
+with tab_port:
     st.markdown("### 📁 My Kalshi Portfolio")
     try:
         from src.kalshi_portfolio import KalshiPortfolio, check_portfolio_available
 
         if not check_portfolio_available():
-            st.warning("""
-            **Portfolio Setup Required**: Add `KALSHI_API_KEY_ID` to your `.env` file.
-            1. Go to [Kalshi](https://kalshi.com) → Settings → API Keys
-            2. Copy the **Key ID** and paste it as `KALSHI_API_KEY_ID`
-            3. Restart the app
-            """)
+            st.warning("**Setup**: Add `KALSHI_API_KEY_ID` to `.env` → [Kalshi API Keys](https://kalshi.com)")
         else:
             @st.cache_data(ttl=30)
             def fetch_portfolio():
-                kp = KalshiPortfolio()
-                return kp.get_portfolio_summary()
+                return KalshiPortfolio().get_portfolio_summary()
 
             summary = fetch_portfolio()
-
             if summary.get('error'):
                 st.error(f"Portfolio error: {summary['error']}")
             else:
-                # ── Balance & Stats Row ──
+                # Balance strip
                 b1, b2, b3, b4 = st.columns(4)
                 if summary['balance'] is not None:
                     b1.metric("💰 Cash", f"${summary['balance']:,.2f}")
@@ -422,44 +381,32 @@ with tab_portfolio:
                     ((p.get('market_price', 0) - p.get('average_price', 0)) * p.get('position', 0)) / 100
                     for p in summary.get('positions', []) if p.get('market_price')
                 )
-                b4.metric("💹 Unrealized PnL",
-                          f"{'+'if unrealized>=0 else ''}{unrealized:,.2f}")
+                b4.metric("💹 Unrealized PnL", f"{'+'if unrealized>=0 else ''}{unrealized:,.2f}")
 
-                # ── Telegram Kill Switch ──
+                # ── Weather Auto-Sell Engine Status ──
                 st.markdown("---")
-                ks_col1, ks_col2 = st.columns([3, 1])
-                with ks_col1:
-                    st.markdown("#### 🚨 Kill Switch")
-                    st.caption("Sends Telegram alert to liquidate all positions (Kalshi API is read-only).")
-                with ks_col2:
-                    if st.button("🔴 Send Kill Alert", type="primary", use_container_width=True):
-                        try:
-                            from src.telegram_notifier import TelegramNotifier
-                            tn = TelegramNotifier()
-                            positions = summary.get('positions', [])
-                            result = tn.alert_kill_switch(
-                                reason="Manual kill switch activated from dashboard",
-                                positions=positions
-                            )
-                            if result:
-                                st.success("✅ Kill switch alert sent to Telegram!")
-                            else:
-                                st.error("Failed to send Telegram alert. Check bot config.")
-                        except Exception as e:
-                            st.error(f"Telegram error: {e}")
+                st.markdown("""
+                <div class="auto-sell-box">
+                    <h5>🌤️ Weather Auto-Sell Engine</h5>
+                    <span style="color: #94a3b8; font-size: 0.85rem;">
+                        Monitors NWS for settlement-guaranteeing temperatures. When triggered, auto-sends a
+                        <strong style="color:#34d399">SELL</strong> alert to Telegram to lock in max profit or protect from loss.
+                        <br>• Only weather positions • Only SELL orders • Only on live NWS data changes
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
 
-                # ── Open Positions ──
+                # ── Open Positions with Market Context ──
                 st.markdown("---")
                 positions = summary.get('positions', [])
                 if positions:
                     st.markdown("#### 📊 Open Positions")
 
-                    # Build market context lookup
-                    context_lookup = {}
+                    ctx_lookup = {}
                     for opp in live_opps:
-                        ticker = opp.get('MarketTicker', opp.get('market_ticker', ''))
-                        if ticker:
-                            context_lookup[ticker] = {
+                        tk = opp.get('MarketTicker', opp.get('market_ticker', ''))
+                        if tk:
+                            ctx_lookup[tk] = {
                                 'edge': float(opp.get('Edge', opp.get('edge', 0))),
                                 'action': opp.get('Action', opp.get('action', '')),
                                 'engine': opp.get('Engine', opp.get('engine', '')),
@@ -471,30 +418,26 @@ with tab_portfolio:
                         contracts = pos.get('position', 0)
                         avg_cost = pos.get('average_price', 0)
                         current = pos.get('market_price')
-                        unrealized_pnl = ((current - avg_cost) * contracts) / 100 if current else 0
+                        pnl = ((current - avg_cost) * contracts) / 100 if current else 0
 
-                        # Market Context badge
-                        ctx = context_lookup.get(raw_ticker)
-                        context_html = ""
+                        ctx = ctx_lookup.get(raw_ticker)
+                        ctx_html = ""
                         if ctx:
-                            edge_color = "#3fb950" if ctx['edge'] > 0 else "#f85149"
-                            context_html = f'<span class="stat-pill" style="color:{edge_color}!important">{ctx["engine"]}: {ctx["edge"]:+.1f}% edge</span>'
+                            ec = "#34d399" if ctx['edge'] > 0 else "#f87171"
+                            ctx_html = f'<span class="stat-pill" style="color:{ec}!important;border-color:{ec}33">{ctx["engine"]}: {ctx["edge"]:+.1f}%</span>'
 
-                        pnl_color = "#3fb950" if unrealized_pnl >= 0 else "#f85149"
                         with st.container(border=True):
                             c1, c2 = st.columns([3, 1])
                             with c1:
                                 st.markdown(f"**{readable}**")
-                                st.caption(f"`{raw_ticker}` | {contracts} contracts @ {avg_cost}¢")
-                                if context_html:
-                                    st.markdown(context_html, unsafe_allow_html=True)
+                                st.caption(f"`{raw_ticker}` · {contracts} contracts @ {avg_cost}¢")
+                                if ctx_html:
+                                    st.markdown(ctx_html, unsafe_allow_html=True)
                             with c2:
-                                if current:
-                                    st.metric("PnL", f"${unrealized_pnl:+.2f}", f"{current:.0f}¢")
-                                else:
-                                    st.metric("PnL", "N/A")
+                                st.metric("PnL", f"${pnl:+.2f}" if current else "N/A",
+                                          f"{current:.0f}¢" if current else None)
                 else:
-                    st.info("No open positions. Your settled trades are shown below.")
+                    st.info("No open positions.")
 
                 # ── Settlement History ──
                 settlements = summary.get('settlements', [])
@@ -502,122 +445,105 @@ with tab_portfolio:
                     st.markdown("---")
                     st.markdown("#### 📜 Recent Settlements")
                     for s in settlements[:10]:
-                        revenue = s.get('revenue', 0) / 100
-                        ticker = s.get('ticker', 'Unknown')
-                        settled_at = s.get('settled_time', '')[:10] if s.get('settled_time') else ''
-                        icon = "✅" if revenue > 0 else ("❌" if revenue < 0 else "➖")
-                        st.markdown(f"{icon} **{ticker}** — ${revenue:+.2f} {'(' + settled_at + ')' if settled_at else ''}")
-
+                        rev = s.get('revenue', 0) / 100
+                        tk = s.get('ticker', '?')
+                        when = s.get('settled_time', '')[:10] if s.get('settled_time') else ''
+                        icon = "✅" if rev > 0 else ("❌" if rev < 0 else "➖")
+                        st.markdown(f"{icon} **{tk}** — ${rev:+.2f} {'(' + when + ')' if when else ''}")
     except Exception as e:
         st.warning(f"Portfolio unavailable: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 2: QUANT LAB (SPY/QQQ)
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════ TAB 2: QUANT LAB ═════════════════════
 with tab_quant:
     st.markdown("### 🧪 Quant Lab — SPY/QQQ Directional Intelligence")
-    st.caption("Hourly predictions using Alpaca + FinBERT + market microstructure. Models SPX/Nasdaq direction via SPY/QQQ proxies.")
+    st.caption("Hourly predictions via Alpaca + FinBERT + market microstructure. Models SPX/Nasdaq direction using SPY/QQQ proxies.")
 
-    st.warning("""
-    ⚠️ **PAPER TRADING ONLY**: This is a quantitative research platform. No real trades are executed.
-    All signals require manual review and execution on Kalshi.
-    """)
+    st.info("⚠️ **Paper Trading Only** — Quantitative research platform. All signals require manual Kalshi execution.")
 
-    # Display Quant signals from scanner
     if paper_opps:
-        render_grid(paper_opps, "quant", empty_msg="No quant signals available.")
+        render_grid(paper_opps, "quant")
     else:
-        st.info("🔬 No quant signals yet. Run the background scanner to generate predictions.")
+        st.info("🔬 No quant signals. Run the background scanner to generate predictions.")
 
-    # Placeholders for Phase 3 microstructure metrics
     st.markdown("---")
-    st.markdown("#### 📊 Market Microstructure (Coming Phase 3)")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("GEX (SPY)", "—", help="Gamma Exposure from options chains")
-    m2.metric("Amihud Ratio", "—", help="Illiquidity ratio: |return| / $volume")
+    st.markdown("#### 📊 Market Microstructure Metrics")
+    st.caption("Live values will populate after Phase 3 engine rebuild.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("GEX (SPY)", "—", help="Net Gamma Exposure from options chains")
+    m2.metric("Amihud", "—", help="Illiquidity ratio: |return| / $volume")
     m3.metric("CS Spread", "—", help="Corwin-Schultz synthetic bid-ask spread")
+    m4.metric("RVOL", "—", help="Relative volume vs 20-period SMA")
 
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 3: WEATHER MARKETS
-# ═══════════════════════════════════════════════════════════════
-with tab_weather:
+# ═══════════════════════ TAB 3: WEATHER ═══════════════════════
+with tab_wx:
     st.markdown("### ⛈️ Weather Markets — NWS Settlement Arbitrage")
-    st.caption("NWS is the official settlement source for Kalshi weather markets. 6AM-6PM daily highs.")
+    st.caption("NWS is the official settlement source. 6AM-6PM daily highs only.")
 
     col_w1, col_w2 = st.columns([3, 1])
-
     with col_w1:
         if weather_opps:
-            render_grid(weather_opps, "weather",
-                        empty_msg="🌤️ No weather opportunities found.")
+            render_grid(weather_opps, "weather", empty_msg="🌤️ No weather edges found.")
         else:
-            st.info("🌤️ No weather opportunities. Run the scanner or wait for markets to open.")
-
+            st.info("🌤️ Waiting for weather markets to open.")
     with col_w2:
-        st.markdown("##### 📡 Live NWS Forecast")
-        st.caption("Official data from weather.gov (6AM-6PM highs)")
+        st.markdown("##### 📡 Live NWS")
         try:
             from scripts.engines.weather_engine import WeatherEngine
-            we = WeatherEngine()
-            forecasts = we.get_all_forecasts()
+            forecasts = WeatherEngine().get_all_forecasts()
             for city, dates in forecasts.items():
-                city_name = {"NYC": "New York", "Chicago": "Chicago", "Miami": "Miami"}.get(city, city)
-                with st.expander(f"📍 {city_name}", expanded=True):
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    tmrw_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-                    if today_str in dates:
-                        st.markdown(f"**Today:** High {dates[today_str]}°F")
-                    if tmrw_str in dates:
-                        st.markdown(f"**Tomorrow:** High {dates[tmrw_str]}°F")
+                cn = {"NYC": "New York", "Chicago": "Chicago", "Miami": "Miami"}.get(city, city)
+                with st.expander(f"📍 {cn}", expanded=True):
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    tmrw = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                    if today in dates:
+                        st.markdown(f"**Today:** {dates[today]}°F")
+                    if tmrw in dates:
+                        st.markdown(f"**Tomorrow:** {dates[tmrw]}°F")
         except Exception:
-            st.caption("Unable to load NWS forecast at this time.")
+            st.caption("NWS forecast unavailable.")
 
-    # Telegram alert thresholds
+    # Auto-sell thresholds
     st.markdown("---")
-    st.markdown("#### 📱 Telegram Alert Thresholds")
-    st.caption("When NWS prints a temperature that guarantees a contract outcome, a Telegram alert fires automatically.")
-    tc1, tc2 = st.columns(2)
-    tc1.info("🌤️ **Take-Profit**: Alert when settlement is guaranteed and position held")
-    tc2.info("📡 **New Edge**: Alert when edge > 15% on any weather market")
+    st.markdown("""
+    <div class="auto-sell-box">
+        <h5>📱 Telegram Alert Thresholds</h5>
+        <span style="color: #94a3b8; font-size: 0.85rem;">
+            <strong>Take-Profit:</strong> NWS prints temperature guaranteeing contract outcome → auto SELL alert<br>
+            <strong>Loss Protection:</strong> NWS forecast shifts against position → SELL alert to cut losses<br>
+            <strong>New Edge:</strong> Edge > 15% on any weather market → BUY alert for manual execution
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 4: MACRO MARKETS
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════ TAB 4: MACRO ═════════════════════════
 with tab_macro:
     st.markdown("### 🏛️ Macro Markets — FRED Economic Intelligence")
-    st.caption("Live economic data from the Federal Reserve Bank of St. Louis.")
 
-    # Display macro opportunities
     if macro_opps:
-        st.markdown("#### Active Macro Opportunities")
-        render_grid(macro_opps, "macro", empty_msg="No macro opportunities found.")
+        st.markdown("#### Active Opportunities")
+        render_grid(macro_opps, "macro")
         st.markdown("---")
 
-    # Live FRED data
     st.markdown("#### 📈 Live Economic Indicators")
     try:
         import fredapi
-        fred_key = os.getenv('FRED_API_KEY', '').strip('"')
-        if fred_key:
-            fred = fredapi.Fred(api_key=fred_key)
-
+        fk = os.getenv('FRED_API_KEY', '').strip('"')
+        if fk:
+            fred = fredapi.Fred(api_key=fk)
             fc1, fc2 = st.columns(2)
-
             with fc1:
                 try:
                     cpi = fred.get_series('CPIAUCSL', observation_start='2023-01-01')
                     if len(cpi) >= 13:
-                        cpi_yoy = ((cpi / cpi.shift(12)) - 1) * 100
-                        cpi_yoy = cpi_yoy.dropna()
+                        cpi_yoy = (((cpi / cpi.shift(12)) - 1) * 100).dropna()
                         st.markdown("**CPI Year-over-Year (%)**")
                         st.line_chart(cpi_yoy, use_container_width=True, height=200)
                         st.metric("Current CPI YoY", f"{cpi_yoy.iloc[-1]:.2f}%")
                 except Exception as e:
                     st.caption(f"CPI unavailable: {e}")
-
             with fc2:
                 try:
                     fed = fred.get_series('DFEDTARU', observation_start='2023-01-01')
@@ -630,24 +556,22 @@ with tab_macro:
 
             st.markdown("---")
             fc3, fc4 = st.columns(2)
-
             with fc3:
                 try:
-                    unemp = fred.get_series('UNRATE', observation_start='2023-01-01')
-                    if len(unemp) > 0:
+                    un = fred.get_series('UNRATE', observation_start='2023-01-01')
+                    if len(un) > 0:
                         st.markdown("**Unemployment Rate (%)**")
-                        st.line_chart(unemp, use_container_width=True, height=200)
-                        st.metric("Current Unemployment", f"{unemp.iloc[-1]:.1f}%")
+                        st.line_chart(un, use_container_width=True, height=200)
+                        st.metric("Unemployment", f"{un.iloc[-1]:.1f}%")
                 except Exception as e:
                     st.caption(f"Unemployment unavailable: {e}")
-
             with fc4:
                 try:
                     gdp = fred.get_series('A191RL1Q225SBEA', observation_start='2022-01-01')
                     if len(gdp) > 0:
                         st.markdown("**GDP Growth Rate (%)**")
                         st.line_chart(gdp, use_container_width=True, height=200)
-                        st.metric("Latest GDP Growth", f"{gdp.iloc[-1]:.1f}%")
+                        st.metric("GDP Growth", f"{gdp.iloc[-1]:.1f}%")
                 except Exception as e:
                     st.caption(f"GDP unavailable: {e}")
         else:
@@ -655,23 +579,206 @@ with tab_macro:
     except Exception as e:
         st.error(f"FRED error: {e}")
 
-    # PnL Backtest placeholder
+    # PnL backtest
     st.markdown("---")
     st.markdown("#### 📊 Model PnL Backtest")
-    st.caption("Compares model rate predictions against actual Kalshi contract outcomes.")
+    st.caption("Compares model rate predictions against Kalshi contract outcomes.")
     try:
         from src.supabase_client import get_trade_history
         trades = get_trade_history(limit=100)
         if trades:
-            df_trades = pd.DataFrame(trades)
-            if 'pnl_cents' in df_trades.columns and df_trades['pnl_cents'].notna().any():
-                df_trades['cumulative_pnl'] = df_trades['pnl_cents'].cumsum() / 100
-                st.line_chart(df_trades['cumulative_pnl'], use_container_width=True, height=200)
-                total_pnl = df_trades['pnl_cents'].sum() / 100
-                st.metric("Total PnL", f"${total_pnl:+.2f}")
+            df_t = pd.DataFrame(trades)
+            if 'pnl_cents' in df_t.columns and df_t['pnl_cents'].notna().any():
+                df_t['cumulative_pnl'] = df_t['pnl_cents'].cumsum() / 100
+                st.line_chart(df_t['cumulative_pnl'], use_container_width=True, height=200)
+                st.metric("Total PnL", f"${df_t['pnl_cents'].sum()/100:+.2f}")
             else:
-                st.info("No PnL data yet. Run more scans to build history.")
+                st.info("No PnL data yet.")
         else:
-            st.info("No trade history in Supabase yet. Run the scanner to populate.")
+            st.info("No trade history yet. Run scanner to populate.")
     except Exception:
-        st.info("Trade history will populate after scanner runs begin writing to Supabase.")
+        st.info("Trade history populates after scanner writes to Supabase.")
+
+
+# ═══════════════════════ TAB 5: BACKTESTING ═══════════════════
+with tab_bt:
+    st.markdown("### 📊 Backtesting — Engine Performance")
+
+    bt_weather, bt_macro, bt_quant = st.tabs(["⛈️ Weather", "🏛️ Macro", "🧪 Quant ML"])
+
+    with bt_weather:
+        st.markdown("#### ⛈️ NWS Temperature Prediction Accuracy")
+        try:
+            from azure.storage.blob import BlobServiceClient
+            conn_str = os.getenv("AZURE_CONNECTION_STRING", "").strip('"')
+            if conn_str:
+                blob_svc = BlobServiceClient.from_connection_string(conn_str, connection_timeout=10)
+                container = blob_svc.get_container_client("market-snapshots")
+                blobs = sorted(container.list_blobs(), key=lambda b: b.name, reverse=True)
+                snapshots = []
+                for blob in blobs[:50]:
+                    try:
+                        data = container.download_blob(blob.name).readall()
+                        snapshots.append(json.loads(data))
+                    except Exception:
+                        pass
+                records = [{'timestamp': s.get('timestamp_utc', ''),
+                            'live_opps': s.get('live_opportunities', 0),
+                            'total': s.get('markets_analyzed', 0)} for s in snapshots]
+                if records:
+                    df = pd.DataFrame(records)
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+                    df = df.dropna(subset=['timestamp']).sort_values('timestamp')
+                    if len(df) > 1:
+                        st.line_chart(df.set_index('timestamp')['live_opps'], use_container_width=True)
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Scans", len(df))
+                        c2.metric("Avg Opps", f"{df['live_opps'].mean():.0f}")
+                        c3.metric("Peak", int(df['live_opps'].max()))
+                    else:
+                        st.info("Need more snapshots.")
+                else:
+                    st.info("No snapshots yet. Run scanner.")
+            else:
+                st.info("Azure connection not configured.")
+        except Exception as e:
+            st.info(f"Weather backtest: {e}")
+
+    with bt_macro:
+        st.markdown("#### 🏛️ FRED Economic History")
+        try:
+            import fredapi
+            fk = os.getenv('FRED_API_KEY', '').strip('"')
+            if fk:
+                fred = fredapi.Fred(api_key=fk)
+                cpi = fred.get_series('CPIAUCSL', observation_start='2023-01-01')
+                if len(cpi) >= 13:
+                    cpi_yoy = (((cpi / cpi.shift(12)) - 1) * 100).dropna()
+                    st.markdown("**CPI Year-over-Year (%)**")
+                    st.line_chart(cpi_yoy, use_container_width=True)
+                    c1, c2 = st.columns(2)
+                    c1.metric("Current CPI YoY", f"{cpi_yoy.iloc[-1]:.2f}%")
+                    c2.metric("12M Range", f"{cpi_yoy.iloc[-12:].min():.1f}% — {cpi_yoy.iloc[-12:].max():.1f}%")
+                fed = fred.get_series('DFEDTARU', observation_start='2023-01-01')
+                if len(fed) > 0:
+                    st.markdown("**Fed Funds Rate (%)**")
+                    st.line_chart(fed, use_container_width=True)
+                    c1, c2 = st.columns(2)
+                    c1.metric("Current Rate", f"{fed.iloc[-1]:.2f}%")
+                    c2.metric("1Y Change", f"{fed.iloc[-1] - fed.iloc[min(len(fed)-1, 252)]:.2f}%")
+            else:
+                st.warning("FRED_API_KEY not set.")
+        except Exception as e:
+            st.error(f"FRED error: {e}")
+
+    with bt_quant:
+        st.markdown("#### 🧪 Quant ML — P&L Replay")
+        try:
+            from src.backtester import fetch_historical_data, simulate_backtest
+            with st.spinner("Loading logs..."):
+                logs_df = fetch_historical_data()
+            if not logs_df.empty:
+                c1, c2 = st.columns(2)
+                bankroll = c1.number_input("Bankroll ($)", value=100, min_value=10, max_value=10000)
+                min_edge = c2.slider("Min Edge (%)", 5, 30, 10)
+                result = simulate_backtest(logs_df, bankroll=bankroll, min_edge=min_edge)
+                m = result['metrics']
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Trades", m['total_trades'])
+                m2.metric("Win Rate", f"{m['win_rate']}%")
+                m3.metric("Return", f"{m['total_return']}%")
+                m4.metric("Sharpe", m['sharpe'])
+                m5.metric("Max DD", f"-{m['max_drawdown']}%")
+                if result['equity_curve']:
+                    eq = pd.DataFrame(result['equity_curve'], columns=['ts', 'eq'])
+                    eq['ts'] = pd.to_datetime(eq['ts'], errors='coerce')
+                    eq = eq.dropna(subset=['ts'])
+                    if not eq.empty:
+                        st.line_chart(eq.set_index('ts')['eq'], use_container_width=True)
+                if result['trades']:
+                    with st.expander(f"📋 Trade Log ({len(result['trades'])} trades)"):
+                        st.dataframe(pd.DataFrame(result['trades']), use_container_width=True)
+            else:
+                st.info("No logs yet. Run scanner a few times.")
+        except Exception as e:
+            st.error(f"Backtest error: {e}")
+
+
+# ═══════════════════════ TAB 6: QUANT GLOSSARY ════════════════
+with tab_gloss:
+    st.markdown("### 📖 The Quant Glossary")
+    st.caption("Professional trading terminology used throughout this platform.")
+
+    st.markdown("---")
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("#### 📈 Alpha & Math")
+        with st.expander("⭐ Edge %", expanded=True):
+            st.markdown("""
+            **Edge = Model Probability − Market Price**
+
+            If our model says a weather contract has a 75% chance of settling YES
+            but Kalshi prices it at 50¢ (50%), our edge is +25%. This is the core
+            alpha signal driving every trade recommendation.
+            """)
+        with st.expander("📐 Kelly Criterion (Quarter-Kelly)"):
+            st.markdown("""
+            **Kelly % = (edge × probability) / (1 − probability)**
+
+            We enforce **Quarter-Kelly (0.25×)** sizing to manage risk. If full Kelly says
+            bet 20% of bankroll, we bet 5%. This dramatically reduces drawdowns while
+            capturing ~75% of the theoretical growth rate.
+            """)
+        with st.expander("📊 Brier Score"):
+            st.markdown("""
+            **Brier = (1/N) × Σ(forecast − outcome)²**
+
+            Measures probabilistic accuracy. Range: 0 (perfect) to 1 (worst).
+            A score < 0.25 indicates the model outperforms naive coin-flip prediction.
+            Used to detect model drift and trigger retraining.
+            """)
+        with st.expander("📉 Amihud Illiquidity Ratio"):
+            st.markdown("""
+            **Amihud = |Return| / Dollar Volume**
+
+            Measures price impact per unit of dollar volume traded. High values
+            indicate illiquid markets where large orders move prices significantly.
+            Spikes signal potential liquidity cascades.
+            """)
+
+    with col_b:
+        st.markdown("#### 🛡️ Risk & Execution")
+        with st.expander("↔️ Bid-Ask Spread", expanded=True):
+            st.markdown("""
+            The difference between the best buy and sell prices. A 3¢ spread on a
+            50¢ contract means you pay 51.5¢ to buy and receive 48.5¢ to sell.
+            Tighter spreads = more liquid market = better execution.
+            """)
+        with st.expander("📊 Corwin-Schultz Spread"):
+            st.markdown("""
+            **Synthetic bid-ask spread estimated from daily High/Low prices.**
+
+            Uses the statistical relationship between price range and volatility to
+            estimate the effective spread without needing tick-level data. A key input
+            to our microstructure feature cluster.
+            """)
+        with st.expander("🎯 GEX (Gamma Exposure)"):
+            st.markdown("""
+            **GEX = Σ(Open Interest × Gamma × Spot² × 0.01)**
+
+            Aggregate gamma across all strikes. **Positive GEX** = dealers sell into
+            rallies and buy dips (stabilizing). **Negative GEX** = dealers amplify
+            moves (destabilizing). GEX flips are major regime changes.
+            """)
+        with st.expander("⏱️ Annualized EV"):
+            st.markdown("""
+            **AEV = Edge% × (365 / Days-to-Resolution)**
+
+            Normalizes edge across different contract durations. A 5% edge on a
+            1-day contract (AEV = 1,825%) is far more attractive than 20% edge
+            on a 90-day contract (AEV = 81%).
+            """)
+
+    st.markdown("---")
+    st.caption("Kalshi Edge Finder • Quantitative Infrastructure for Event Markets")
