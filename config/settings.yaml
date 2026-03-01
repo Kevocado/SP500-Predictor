@@ -4,7 +4,7 @@
 
 # --- Data Sources ---
 data:
-  assets: ["SPX", "Nasdaq", "BTC", "ETH"]
+  assets: ["SPY", "QQQ"]
   yfinance:
     hourly_period: "5d"
     hourly_interval: "1m"
@@ -48,8 +48,16 @@ trading:
   min_edge_pct: 8
   max_kelly_pct: 6
   moneyness_filter_pct: 2
-  scan_assets: ["SPX", "Nasdaq", "BTC", "ETH"]
+  scan_assets: ["SPY", "QQQ"]
   bankroll_default: 1000
+  kelly_fraction: 0.25       # Quarter-Kelly sizing
+
+# --- Telegram Alerts ---
+telegram:
+  enabled: true
+  min_edge_alert: 15
+  vix_emergency_threshold: 45
+  weather_auto_alert: true
 
 # --- Dashboard ---
 dashboard:
