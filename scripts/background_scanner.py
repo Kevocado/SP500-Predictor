@@ -362,6 +362,28 @@ def run_scan():
             print(f"  ⚠️ Failed to save paper op: {e}")
 
     print(f"✅ Saved {len(paper_ops)} quant signals to PaperTradingSignals")
+
+    # ── Run Market Alerts (Weather Auto-Sell, GEX Flip, VIX Emergency) ──
+    print("\n📱 Running Market Alerts...")
+    try:
+        from scripts.market_alerts import run_all_alerts
+        alerts = run_all_alerts()
+        if alerts:
+            print(f"  📱 {len(alerts)} alert(s) sent to Telegram")
+        else:
+            print("  ✅ No alerts triggered")
+    except Exception as e:
+        print(f"  ⚠️ Market alerts failed: {e}")
+
+    # ── Also write to Supabase (dual-write during migration) ──
+    try:
+        from src.supabase_client import upsert_opportunities
+        all_opps = real_edge_ops + paper_ops_raw if 'paper_ops_raw' in dir() else real_edge_ops
+        upsert_opportunities(all_opps)
+        print(f"  ✅ Also saved to Supabase")
+    except Exception as e:
+        print(f"  ⚠️ Supabase write skipped: {e}")
+
     print(f"\n🏁 Scan complete at {datetime.now(timezone.utc).isoformat()}")
 
 
