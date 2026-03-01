@@ -75,6 +75,10 @@ def fetch_tiingo(ticker="SPY", period="5d", interval="1min"):
         "5d": timedelta(days=5),
         "1mo": dateutil.relativedelta.relativedelta(months=1),
         "3mo": dateutil.relativedelta.relativedelta(months=3),
+        "6mo": dateutil.relativedelta.relativedelta(months=6),
+        "1y": dateutil.relativedelta.relativedelta(years=1),
+        "2y": dateutil.relativedelta.relativedelta(years=2),
+        "3y": dateutil.relativedelta.relativedelta(years=3),
     }
     delta = period_map.get(period, timedelta(days=5))
     start = (now - delta).strftime("%Y-%m-%d")

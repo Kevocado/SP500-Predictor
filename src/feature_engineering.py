@@ -223,6 +223,30 @@ def add_microstructure_features(df):
     # Relative Volume
     df['rvol'] = relative_volume(df['Volume'])
 
+    # ── Per-bar Gamma Pressure Proxy ──
+    # Formula: (High-Low)/ATR(14) × Price_Acceleration × Volume/SMA(Volume,20)
+    # Positive = mean-reversion regime (dealers sell rallies/buy dips)
+    # Negative = directional cascade (dealers amplify moves)
+    tr = pd.concat([
+        df['High'] - df['Low'],
+        (df['High'] - df['Close'].shift(1)).abs(),
+        (df['Low'] - df['Close'].shift(1)).abs()
+    ], axis=1).max(axis=1)
+    atr_14 = tr.rolling(14, min_periods=5).mean()
+
+    norm_range = (df['High'] - df['Low']) / atr_14.replace(0, np.nan)
+    velocity = df['Close'].diff()
+    acceleration = velocity.diff()
+    vol_sma = df['Volume'].rolling(20, min_periods=5).mean()
+    norm_vol = df['Volume'] / vol_sma.replace(0, np.nan)
+
+    df['gamma_pressure'] = norm_range * acceleration * norm_vol
+    # Clamp extreme values to prevent model distortion
+    df['gamma_pressure'] = df['gamma_pressure'].clip(
+        lower=df['gamma_pressure'].quantile(0.01) if len(df) > 50 else -100,
+        upper=df['gamma_pressure'].quantile(0.99) if len(df) > 50 else 100
+    )
+
     return df
 
 
@@ -411,7 +435,7 @@ FEATURE_COLUMNS = [
     'lag_ret_1', 'lag_ret_5', 'lag_ret_15', 'lag_ret_30', 'lag_ret_60',
     'hourly_news_sentiment',
     # Cluster 2: Microstructure
-    'amihud', 'cs_spread', 'rvol',
+    'amihud', 'cs_spread', 'rvol', 'gamma_pressure',
     # Cluster 3: Derivatives
     'gex',
     # Time features

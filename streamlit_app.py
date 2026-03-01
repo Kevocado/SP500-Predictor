@@ -926,14 +926,34 @@ with tab_bt:
                                     if dd > max_dd:
                                         max_dd = dd
 
+                                # Compute Brier score if direction classifier available
+                                brier_score = None
+                                try:
+                                    from src.model_daily import load_direction_model
+                                    dir_model = load_direction_model("SPY")
+                                    if dir_model is not None:
+                                        dir_probs = dir_model.predict_proba(X)[:, 1]
+                                        actual_dirs = (df_clean['Close'].shift(-1) > df_clean['Close']).astype(int).values
+                                        # Only compute on rows where we have the next bar
+                                        valid = ~np.isnan(actual_dirs.astype(float))
+                                        if valid.sum() > 5:
+                                            brier_score = np.mean((dir_probs[valid] - actual_dirs[valid]) ** 2)
+                                except Exception:
+                                    pass
+
                                 # Metrics strip
                                 st.markdown("#### 📊 Results")
-                                m1, m2, m3, m4, m5 = st.columns(5)
+                                m1, m2, m3, m4, m5, m6 = st.columns(6)
                                 m1.metric("Predictions", total_trades)
                                 m2.metric("Win Rate", f"{win_rate:.1f}%")
                                 m3.metric("Total P&L", f"${total_pnl:+,.2f}")
                                 m4.metric("Return", f"{total_return:+.1f}%")
                                 m5.metric("Max Drawdown", f"-{max_dd:.1f}%")
+                                if brier_score is not None:
+                                    brier_delta = "Edge ✓" if brier_score < 0.25 else "No edge"
+                                    m6.metric("Brier Score", f"{brier_score:.4f}", brier_delta)
+                                else:
+                                    m6.metric("Brier Score", "—", "No classifier")
 
                                 # Equity curve
                                 st.markdown("---")

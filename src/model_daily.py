@@ -1,8 +1,14 @@
 """
-Model Daily — LightGBM direction predictor for SPY/QQQ
+Model Daily — LightGBM price predictor + direction classifier for SPY/QQQ
 
-Uses the full 20-feature pipeline from feature_engineering.py.
-Targets: next-hour close price.
+Uses the full 21-feature pipeline from feature_engineering.py.
+Two models per ticker:
+  1. LGBMRegressor  → next-hour close price (RMSE)
+  2. LGBMClassifier → next-hour direction probability (Brier Score)
+
+The classifier outputs P(up) which is directly comparable to
+Kalshi implied probabilities for arbitrage detection.
+
 Sizing: Quarter-Kelly (0.25×).
 """
 
@@ -29,15 +35,20 @@ def prepare_daily_data(df, ticker="SPY"):
     daily_closes = df['Close'].resample('D').last()
     df['Target_Close'] = df.index.normalize().map(daily_closes)
 
+    # Binary direction target: 1 if next bar is up, 0 if down
+    df['Target_Direction'] = (df['Close'].shift(-1) > df['Close']).astype(int)
+
     # Drop NaN
-    df = df.dropna(subset=FEATURE_COLUMNS + ['Target_Close'])
+    df = df.dropna(subset=FEATURE_COLUMNS + ['Target_Close', 'Target_Direction'])
 
     return df, FEATURE_COLUMNS, gex_data
 
 
 def train_daily_model(df, ticker="SPY"):
     """
-    Trains LightGBM on the full 20-feature set.
+    Trains two models:
+      1. LGBMRegressor for price prediction (RMSE)
+      2. LGBMClassifier for directional probability (Brier Score)
     """
     df_proc, feature_cols, gex_data = prepare_daily_data(df, ticker)
 
@@ -46,14 +57,17 @@ def train_daily_model(df, ticker="SPY"):
         return None
 
     X = df_proc[feature_cols]
-    y = df_proc["Target_Close"]
+    y_price = df_proc["Target_Close"]
+    y_dir = df_proc["Target_Direction"]
 
     # Time-based train/test split
     train_size = int(len(X) * 0.85)
     X_train, X_test = X.iloc[:train_size], X.iloc[train_size:]
-    y_train, y_test = y.iloc[:train_size], y.iloc[train_size:]
+    y_price_train, y_price_test = y_price.iloc[:train_size], y_price.iloc[train_size:]
+    y_dir_train, y_dir_test = y_dir.iloc[:train_size], y_dir.iloc[train_size:]
 
-    model = lgb.LGBMRegressor(
+    # ── Model 1: Price Regressor (RMSE) ──
+    regressor = lgb.LGBMRegressor(
         n_estimators=500,
         learning_rate=0.05,
         max_depth=6,
@@ -64,25 +78,53 @@ def train_daily_model(df, ticker="SPY"):
         random_state=42,
         verbose=-1,
     )
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_test, y_test)],
+    regressor.fit(
+        X_train, y_price_train,
+        eval_set=[(X_test, y_price_test)],
         eval_metric="rmse",
         callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
     )
 
-    # Calculate test RMSE
-    preds = model.predict(X_test)
-    rmse = np.sqrt(np.mean((preds - y_test) ** 2))
-    print(f"  📊 {ticker} Model RMSE: ${rmse:.2f}")
+    preds = regressor.predict(X_test)
+    rmse = np.sqrt(np.mean((preds - y_price_test) ** 2))
+    print(f"  📊 {ticker} Regressor RMSE: ${rmse:.2f}")
 
-    # Save
+    # ── Model 2: Direction Classifier (Brier Score) ──
+    classifier = lgb.LGBMClassifier(
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=6,
+        num_leaves=31,
+        min_child_samples=20,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        verbose=-1,
+        objective='binary',
+        is_unbalance=True,
+    )
+    classifier.fit(
+        X_train, y_dir_train,
+        eval_set=[(X_test, y_dir_test)],
+        eval_metric="binary_logloss",
+        callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
+    )
+
+    # Brier Score = mean((predicted_prob - actual_outcome)²)
+    # Perfect = 0.0, Coin flip = 0.25, Useless > 0.25
+    dir_probs = classifier.predict_proba(X_test)[:, 1]  # P(up)
+    brier = np.mean((dir_probs - y_dir_test.values) ** 2)
+    dir_accuracy = np.mean(classifier.predict(X_test) == y_dir_test.values)
+    print(f"  🎯 {ticker} Classifier: Brier={brier:.4f} | Accuracy={dir_accuracy:.1%}")
+
+    # ── Save Both Models ──
     os.makedirs("model", exist_ok=True)
-    joblib.dump(model, f"model/lgbm_model_{ticker}.pkl")
+    joblib.dump(regressor, f"model/lgbm_model_{ticker}.pkl")
+    joblib.dump(classifier, f"model/lgbm_direction_{ticker}.pkl")
     joblib.dump(feature_cols, f"model/features_{ticker}.pkl")
-    print(f"  💾 Model saved: model/lgbm_model_{ticker}.pkl")
+    print(f"  💾 Models saved: model/lgbm_model_{ticker}.pkl + lgbm_direction_{ticker}.pkl")
 
-    return model
+    return regressor
 
 
 def predict_daily_close(model, current_df_features, feature_cols=None):
@@ -123,6 +165,32 @@ def load_daily_model(ticker="SPY"):
 
     print(f"  ❌ No model found for {ticker}")
     return None
+
+
+def load_direction_model(ticker="SPY"):
+    """Loads the binary direction classifier."""
+    local_model = f"model/lgbm_direction_{ticker}.pkl"
+    if os.path.exists(local_model):
+        print(f"  ✅ Loaded {ticker} direction classifier")
+        return joblib.load(local_model)
+    print(f"  ⚠️ No direction classifier for {ticker}")
+    return None
+
+
+def predict_direction(classifier, current_df_features, feature_cols=None):
+    """
+    Predicts direction probability P(up) using the binary classifier.
+    Returns float between 0.0 and 1.0.
+    Directly comparable to Kalshi implied probabilities.
+    """
+    from src.feature_engineering import FEATURE_COLUMNS
+    cols = feature_cols or FEATURE_COLUMNS
+
+    X = current_df_features.reindex(columns=cols, fill_value=0)
+    if len(X) > 0:
+        prob = classifier.predict_proba(X)[:, 1]
+        return prob[-1]
+    return 0.5
 
 
 def quarter_kelly(edge, prob, max_kelly_pct=6):
