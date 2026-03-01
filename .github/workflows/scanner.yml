@@ -48,4 +48,4 @@ jobs:
 
           # Hugging Face (Model Downloads)
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/background_scanner.py
+        run: python -u scripts/background_scanner.py
