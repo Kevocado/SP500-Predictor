@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
-from src.kalshi_feed import get_all_active_markets, get_kalshi_event_url
+from src.kalshi_feed import get_fast_active_markets, get_kalshi_event_url
 
 class EIAEngine:
     """
@@ -44,9 +44,9 @@ class EIAEngine:
         except Exception:
             return []
 
-        # 3. Get Kalshi markets — use targeted keyword search, NOT full catalog
-        from src.kalshi_feed import get_kalshi_event_url
-        all_m = get_all_active_markets()
+        # 3. Get Kalshi markets — use fast fetch, NOT full catalog
+        from src.kalshi_feed import get_fast_active_markets, get_kalshi_event_url
+        all_m = get_fast_active_markets(limit=1000)
         markets = [m for m in all_m if m.get('category') in ('Climate', 'Economics') or 'NATGAS' in m.get('title', '').upper() or 'OIL' in m.get('title', '').upper()]
         if not markets:
             return []

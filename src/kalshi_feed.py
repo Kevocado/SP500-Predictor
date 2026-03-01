@@ -174,6 +174,20 @@ def get_all_active_markets(limit_pages=10):
     # ── CLEAN ──
     return clean_market_data(all_raw_markets, event_cat_map)
 
+def get_fast_active_markets(limit=1000):
+    """
+    Fast fetch of just the top N markets using a single API call.
+    Bypasses the expensive category/event fetching logic.
+    """
+    headers = _headers()
+    try:
+        r = requests.get(KALSHI_API_URL, params={"limit": limit, "status": "open"}, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return r.json().get('markets', [])
+    except Exception as e:
+        print(f"  ❌ Fast fetch failed: {e}")
+    return []
+
 
 def clean_market_data(raw_markets, event_cat_map=None):
     """Cleans markets with categories from the event lookup."""

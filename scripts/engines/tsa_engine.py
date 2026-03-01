@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 import json
-from src.kalshi_feed import get_all_active_markets, get_kalshi_event_url
+from src.kalshi_feed import get_fast_active_markets, get_kalshi_event_url
 
 class TSAEngine:
     """
@@ -49,7 +49,8 @@ class TSAEngine:
             return []
 
         # 3. Get Kalshi markets ONLY after data is confirmed available
-        all_m = get_all_active_markets()
+        from src.kalshi_feed import get_fast_active_markets
+        all_m = get_fast_active_markets()
         markets = [m for m in all_m if m.get('category') == 'World' or 'TSA' in m.get('title', '').upper()]
         if not markets:
             return []
