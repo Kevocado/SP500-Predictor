@@ -32,16 +32,16 @@ class WeatherEngine:
             'Miami': {'office': 'MFL', 'gridX': 110, 'gridY': 50},
         }
 
-        self.conn_str = os.getenv("AZURE_CONNECTION_STRING")
+        self.conn_str = os.getenv("AZURE_CONNECTION_STRING", "").strip('"').strip("'")
         self.blob_service = None
         self.container_name = "weather-forecasts"
         
         if self.conn_str:
             try:
                 from azure.storage.blob import BlobServiceClient
-                self.blob_service = BlobServiceClient.from_connection_string(self.conn_str)
+                self.blob_service = BlobServiceClient.from_connection_string(self.conn_str, connection_timeout=10, read_timeout=10)
                 try:
-                    self.blob_service.create_container(self.container_name)
+                    self.blob_service.create_container(self.container_name, connection_timeout=10, read_timeout=10)
                 except Exception:
                     pass
             except Exception as e:
@@ -62,14 +62,17 @@ class WeatherEngine:
             data = response.json()
             periods = data['properties']['periods']
 
-            # Group temps by date
+            # Group temps by date, strict 6 AM to 6 PM window (Kalshi rules)
             daily_highs = {}
             for p in periods:
                 dt = datetime.fromisoformat(p['startTime'].replace('Z', '+00:00'))
                 date_str = dt.strftime('%Y-%m-%d')
-                temp = p['temperature']
-                if date_str not in daily_highs or temp > daily_highs[date_str]:
-                    daily_highs[date_str] = temp
+                
+                # Kalshi strictly settles based on the 6AM-6PM High Temp
+                if 6 <= dt.hour <= 18:
+                    temp = p['temperature']
+                    if date_str not in daily_highs or temp > daily_highs[date_str]:
+                        daily_highs[date_str] = temp
 
             return daily_highs
 

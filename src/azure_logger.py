@@ -12,7 +12,7 @@ env_path = current_dir / '.env'
 load_dotenv(dotenv_path=env_path)
 
 CONTAINER_NAME = "sp500-market-data"
-CONNECTION_STRING = os.getenv("AZURE_CONNECTION_STRING")
+CONNECTION_STRING = os.getenv("AZURE_CONNECTION_STRING", "").strip('"').strip("'")
 
 # Debug: Check if it worked
 if not CONNECTION_STRING:
@@ -68,7 +68,7 @@ def log_prediction(prediction, current_price, rmse, edge_data, ticker="SPX", tim
         df_new = pd.DataFrame([log_entry])
         
         # 2. Connect to Azure
-        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING, connection_timeout=10, read_timeout=10)
         container_client = blob_service_client.get_container_client(CONTAINER_NAME)
         
         # Create container if it doesn't exist
@@ -109,7 +109,7 @@ def fetch_all_logs():
         return pd.DataFrame()
 
     try:
-        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING, connection_timeout=10, read_timeout=10)
         container_client = blob_service_client.get_container_client(CONTAINER_NAME)
         
         if not container_client.exists():

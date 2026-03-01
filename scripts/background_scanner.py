@@ -43,7 +43,7 @@ import pandas as pd
 
 # ─── Environment ─────────────────────────────────────────────────────
 load_dotenv()
-CONN_STR = os.getenv("AZURE_CONNECTION_STRING")
+CONN_STR = os.getenv("AZURE_CONNECTION_STRING", "").strip('"').strip("'")
 
 if not CONN_STR:
     print("❌ AZURE_CONNECTION_STRING not set. Exiting.")
@@ -238,7 +238,7 @@ def run_scan():
 
     # ── Initialize Azure clients ──
     try:
-        blob_service = BlobServiceClient.from_connection_string(CONN_STR)
+        blob_service = BlobServiceClient.from_connection_string(CONN_STR, connection_timeout=10, read_timeout=10)
         live_table = TableClient.from_connection_string(CONN_STR, "LiveOpportunities")
         paper_table = TableClient.from_connection_string(CONN_STR, "PaperTradingSignals")
 
