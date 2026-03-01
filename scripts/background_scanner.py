@@ -38,6 +38,7 @@ from scripts.engines.quant_engine import (
 from src.ai_validator import AIValidator
 from src.news_analyzer import NewsAnalyzer
 from src.predictit_engine import PredictItEngine
+from src.kalshi_feed import get_real_kalshi_markets
 import pandas as pd
 
 # ─── Environment ─────────────────────────────────────────────────────
@@ -299,7 +300,11 @@ def run_scan():
     except Exception:
         pass
 
-    for opp in real_edge_ops:
+    # Limit to top 20 opportunities by edge to prevent Gemini API timeouts
+    real_edge_ops.sort(key=lambda x: x.get('edge', 0), reverse=True)
+    top_ops = real_edge_ops[:20]
+
+    for opp in top_ops:
         try:
             # PhD Intelligence: Bayesian News Scrutiny (Lightweight)
             news_res = news_analyzer.analyze_event_impact(

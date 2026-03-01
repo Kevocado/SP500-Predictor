@@ -37,11 +37,7 @@ def ensure_models_exist():
 
 ensure_models_exist()
 
-with st.sidebar:
-    st.markdown("---")
-    # Category filter as requested
-    filter_category = st.multiselect("Focus Categories", ["Weather", "Macro", "Alpha", "Niche"], default=["Weather", "Macro", "Alpha", "Niche"])
-
+# (Sidebar filters moved to Screener Tab)
 def parse_kalshi_ticker(ticker):
     """Translates a Kalshi ticker like KXHIGHNY-26FEB23-B33.5 into plain English."""
     try:
@@ -181,37 +177,8 @@ def fetch_backtest_snapshots():
 
 
 # ═══════════════════════════════════════════════════════════════
-# SIDEBAR FILTERS & SETTINGS
+# FILTERS MOVED TO SCREENER TAB
 # ═══════════════════════════════════════════════════════════════
-with st.sidebar:
-    st.markdown("### 🎓 Institutional Filters")
-    min_edge_filter = st.slider(
-        "Min Edge %", 0, 50, 5, 
-        help="Difference between our model's probability and the market price. Higher = better margin of safety."
-    )
-    with st.expander("⚙️ Advanced Filters (Institutional)"):
-        min_kelly_filter = st.slider(
-            "Min Kelly Bet %", 0.0, 10.0, 1.0,
-            help="Recommended bankroll % to wager based on the Kelly Criterion. Filters out small/low-conviction bets."
-        )
-        max_spread = st.slider(
-            "Max Bid-Ask Spread (¢)", 1, 25, 10,
-            help="Filters out illiquid markets where the difference between BUY and SELL prices is too large (wiping out profit)."
-        )
-        
-        st.markdown("---")
-        st.markdown("### 📈 Risk Management")
-        prob_gate = st.checkbox(
-            "Confidence Gate (15-85% Prob)", value=True,
-            help="Focuses on moderate-probability events where price movements are most dynamic. Filters out 'sure things' and 'long shots'."
-        )
-        annualized_sort = st.checkbox(
-            "Prioritize Annualized EV", value=False,
-            help="Sort by Annualized Expected Value: (Edge / Days to Expiry) * 365. Helps compare short-term vs long-term trades."
-        )
-    
-    st.markdown("---")
-    st.caption("v7.0 PhD Edition")
 
 def calculate_annualized_ev(edge_pct, expiration_str):
     """Calculates Annualized Expected Value."""
@@ -300,6 +267,19 @@ def render_grid(data, key_suffix, empty_msg="No matching opportunities found."):
             is_smart_entry = (edge_val > 10) and skew_data.get('whale_detected') and news_aligned
             smart_icon = "🔥 SMART ENTRY" if is_smart_entry else ""
             
+            # Date Badge Logic
+            market_date = row.get('MarketDate', '')
+            date_badge = ""
+            if market_date:
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                tmrw_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                if market_date == today_str:
+                    date_badge = ' <span style="background-color: #373a40; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">TODAY</span>'
+                elif market_date == tmrw_str:
+                    date_badge = ' <span style="background-color: #1f6feb; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">TOMORROW</span>'
+                elif market_date > tmrw_str:
+                    date_badge = ' <span style="background-color: #8957e5; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 8px;">FUTURE</span>'
+
             # Tile UI (Refined for Clarity)
             edge_color = "#3fb950" if edge_val > 0 else "#f85149"
             edge_emoji = "📈" if edge_val > 0 else "📉"
@@ -308,7 +288,7 @@ def render_grid(data, key_suffix, empty_msg="No matching opportunities found."):
             <div class="quant-card" style="border-left: 5px solid {edge_color}; margin-bottom: 25px; position: relative;">
                 <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                     <div style="width: 75%;">
-                        <strong style="font-size: 1.15rem; color: #c9d1d9;">{row.get('Market', 'Unknown')}</strong><br>
+                        <strong style="font-size: 1.15rem; color: #c9d1d9;">{row.get('Market', 'Unknown')}{date_badge}</strong><br>
                         <div style="margin-top: 5px;">
                             <span class="stat-pill">{row.get('Asset', 'Alpha')}</span>
                             <span class="stat-pill" style="border-color: #3fb950; color: #3fb950!important;">{whale_icon} Depth Skew: {skew_val:+.0f}%</span>
@@ -799,6 +779,47 @@ def render_live_card(sig, card_index):
 with tab_screener:
     st.markdown("### ⚡ Live Market Screener")
     st.caption("Unified view of all active algorithmic trading opportunities.")
+
+    with st.expander("⚙️ Screener Filters", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_category = st.multiselect("Focus Categories", ["Weather", "Macro", "Alpha", "Niche"], default=["Weather", "Macro", "Alpha", "Niche"])
+            min_edge_filter = st.slider("Min Edge %", 0, 50, 5, help="Difference between our model's probability and the market price.")
+            min_kelly_filter = st.slider("Min Kelly Bet %", 0.0, 10.0, 1.0, help="Filters out low-conviction bets.")
+        with col2:
+            max_spread = st.slider("Max Bid-Ask Spread (¢)", 1, 25, 10, help="Filters out illiquid markets.")
+            prob_gate = st.checkbox("Confidence Gate (15-85% Prob)", value=True)
+            annualized_sort = st.checkbox("Prioritize Annualized EV", value=False)
+
+    # --- AI MARKET SENTIMENT ---
+    st.markdown("---")
+    try:
+        from src.news_analyzer import NewsAnalyzer
+        from scripts.engines.macro_engine import MacroEngine
+        
+        @st.cache_data(ttl=86400) # Cache for 1 day
+        def get_ai_sentiment_cache():
+            me = MacroEngine()
+            cpi = me.get_latest_cpi_yoy()
+            fed = me.get_fed_rate_prediction()
+            gdp = me.get_gdp_prediction()
+            unemp = me.get_unemployment_rate()
+            
+            snippets = [
+                f"Latest FRED CPI: {cpi}%",
+                f"Latest FRED Fed Rate: {fed}%",
+                f"Latest FRED GDP Growth: {gdp}%",
+                f"Latest FRED Unemployment: {unemp}%"
+            ]
+            analyzer = NewsAnalyzer()
+            return analyzer.get_general_sentiment(vix_value=15.0, macro_news_snippets=snippets)
+            
+        sentiment = get_ai_sentiment_cache()
+        if sentiment:
+            st.info(f"🧠 **Daily AI Market Sentiment ({sentiment.get('label', 'Neutral')})** - {sentiment.get('summary', '')}")
+    except Exception as e:
+        pass
+
 
     # --- WEATHER ARBITRAGE ---
     if "Weather" in filter_category:
