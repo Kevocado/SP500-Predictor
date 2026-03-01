@@ -434,6 +434,13 @@ def create_features(df, ticker="SPY"):
         if col not in df.columns:
             raise ValueError(f"Missing required column: {col}")
 
+    # Ensure DatetimeIndex (handle mixed sources: yfinance, Tiingo, etc.)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+    # Strip timezone info for consistency
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
     # Time features
     df['hour'] = df.index.hour
     df['minute'] = df.index.minute
