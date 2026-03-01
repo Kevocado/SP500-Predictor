@@ -1,174 +1,237 @@
+"""
+Data Loader — Multi-Source Acquisition for SPY/QQQ
+
+Strategy:
+  1. Tiingo: Historical 1-min OHLCV bars (accurate volume ground truth)
+  2. Alpaca: Real-time streams and fallback historical
+  3. FRED: VIX and yield curve macro data
+
+No crypto support — SPY/QQQ only (proxies for SPX/Nasdaq).
+"""
+
 import pandas as pd
+import numpy as np
 import os
 from datetime import datetime, timedelta, timezone
 import dateutil.relativedelta
-from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
-from alpaca.data.timeframe import TimeFrame
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Alpaca API Credentials (loaded from ENV)
-API_KEY = os.getenv("ALPACA_API_KEY", "")
-SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+# API Keys
+ALPACA_KEY = os.getenv("ALPACA_API_KEY", "").strip('"')
+ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY", "").strip('"')
+TIINGO_KEY = os.getenv("TIINGO_API_KEY", "").strip('"')
+
+# Supported tickers and their index mappings
+TICKER_MAP = {
+    "SPX": "SPY",
+    "Nasdaq": "QQQ",
+    "SPY": "SPY",
+    "QQQ": "QQQ",
+}
+
 
 def get_macro_data():
-    """Fetches VIX and 10Y-2Y Yield Curve data from FRED."""
+    """Fetches VIX and 10Y-2Y Yield Curve from FRED."""
     from fredapi import Fred
-    fred_key = os.getenv("FRED_API_KEY")
+    fred_key = os.getenv("FRED_API_KEY", "").strip('"')
     if not fred_key:
-        return {"vix": 20, "yield_curve": 0} # Fallback
-    
-    fred = Fred(api_key=fred_key)
+        return {"vix": 20, "yield_curve": 0}
     try:
-        # VIX Index
+        fred = Fred(api_key=fred_key)
         vix = fred.get_series('VIXCLS').iloc[-1]
-        # 10-Year vs 2-Year Treasury Yield Spread (Recession Indicator)
         yc = fred.get_series('T10Y2Y').iloc[-1]
         return {"vix": vix, "yield_curve": yc}
     except Exception:
         return {"vix": 20, "yield_curve": 0}
 
-def fetch_data(ticker="SPY", period="1mo", interval="1m"):
+
+def fetch_tiingo(ticker="SPY", period="5d", interval="1min"):
     """
-    Fetches intraday data for the given ticker using Alpaca.
+    Fetch historical OHLCV from Tiingo IEX endpoint (1-min bars).
+    Tiingo provides accurate volume ground truth missing from Alpaca free tier.
 
     Args:
-        ticker (str): Symbol to fetch (default "SPY").
-        period (str): Data period to download (default "1mo").
-                      Supports '1d', '5d', '1mo', '3mo', '6mo', '1y'.
-        interval (str): Data interval (default "1m").
-                      Supports '1m', '5m', '15m', '1h', '1d'.
+        ticker: Stock symbol (SPY, QQQ)
+        period: '1d', '5d', '1mo'
+        interval: '1min', '5min', '1hour'
 
     Returns:
-        pd.DataFrame: DataFrame with Datetime index and OHLCV columns.
+        pd.DataFrame with OHLCV columns and DatetimeIndex
     """
-    # Map friendly names to Alpaca tickers
-    ticker_map = {
-        "SPX": "SPY",  # Alpaca doesn't support SPX index directly, use SPY proxy
-        "Nasdaq": "QQQ", # Alpaca doesn't support NDX directly, use QQQ proxy
-        "SPY": "SPY",
-        "NVDA": "NVDA",
-        "TSLA": "TSLA",
-        "BTC": "BTC/USD",
-        "ETH": "ETH/USD"
+    if not TIINGO_KEY:
+        print("  ⚠️ TIINGO_API_KEY not set, falling back to Alpaca")
+        return pd.DataFrame()
+
+    import requests
+
+    symbol = TICKER_MAP.get(ticker, ticker)
+
+    # Parse period to start date
+    now = datetime.now(timezone.utc)
+    period_map = {
+        "1d": timedelta(days=1),
+        "5d": timedelta(days=5),
+        "1mo": dateutil.relativedelta.relativedelta(months=1),
+        "3mo": dateutil.relativedelta.relativedelta(months=3),
+    }
+    delta = period_map.get(period, timedelta(days=5))
+    start = (now - delta).strftime("%Y-%m-%d")
+
+    # Tiingo IEX endpoint for intraday
+    url = f"https://api.tiingo.com/iex/{symbol}/prices"
+    params = {
+        "startDate": start,
+        "resampleFreq": interval,
+        "columns": "open,high,low,close,volume",
+        "token": TIINGO_KEY,
     }
 
-    symbol = ticker_map.get(ticker, ticker)
-    is_crypto = "/" in symbol
-
-    print(f"Fetching data for {symbol} via Alpaca...")
-
-    # Parse period to calculate start date
-    now = datetime.now(timezone.utc)
-    if period == "1d":
-        start_date = now - timedelta(days=1)
-    elif period == "5d":
-        start_date = now - timedelta(days=5)
-    elif period == "1mo":
-        start_date = now - dateutil.relativedelta.relativedelta(months=1)
-    elif period == "3mo":
-        start_date = now - dateutil.relativedelta.relativedelta(months=3)
-    elif period == "6mo":
-        start_date = now - dateutil.relativedelta.relativedelta(months=6)
-    elif period == "1y":
-        start_date = now - dateutil.relativedelta.relativedelta(years=1)
-    else:
-        start_date = now - dateutil.relativedelta.relativedelta(months=1) # default
-
-    # Parse interval to Alpaca TimeFrame
-    if interval == "1m":
-        timeframe = TimeFrame.Minute
-    elif interval == "5m":
-        timeframe = TimeFrame.Minute * 5
-    elif interval == "15m":
-        timeframe = TimeFrame.Minute * 15
-    elif interval == "1h":
-        timeframe = TimeFrame.Hour
-    elif interval == "1d":
-        timeframe = TimeFrame.Day
-    else:
-        timeframe = TimeFrame.Minute # default
-
     try:
-        if not API_KEY or not SECRET_KEY:
-            print(f"⚠️ Missing Alpaca API credentials. Cannot fetch {symbol}.")
+        print(f"  📡 Fetching {symbol} from Tiingo ({period}, {interval})...")
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code != 200:
+            print(f"  ⚠️ Tiingo error {r.status_code}: {r.text[:200]}")
             return pd.DataFrame()
 
-        if is_crypto:
-            crypto_client = CryptoHistoricalDataClient(API_KEY, SECRET_KEY)
-            request_params = CryptoBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=timeframe,
-                start=start_date
-            )
-            bars = crypto_client.get_crypto_bars(request_params)
-        else:
-            stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-            request_params = StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=timeframe,
-                start=start_date
-            )
-            bars = stock_client.get_stock_bars(request_params)
-
-        if not bars or not bars.data or symbol not in bars.data:
-            print("No data found.")
+        data = r.json()
+        if not data:
+            print("  ⚠️ No data from Tiingo")
             return pd.DataFrame()
 
-        # Convert to DataFrame
-        df = bars.df
+        df = pd.DataFrame(data)
 
-        # Alpaca returns a MultiIndex (symbol, timestamp). Drop symbol level.
-        if isinstance(df.index, pd.MultiIndex):
-            df = df.reset_index(level=0, drop=True)
-
-        # Ensure correct column names
-        # Alpaca returns 'open', 'high', 'low', 'close', 'volume', 'trade_count', 'vwap'
+        # Rename columns
         df = df.rename(columns={
-            'open': 'Open',
-            'high': 'High',
-            'low': 'Low',
-            'close': 'Close',
+            'date': 'datetime',
+            'open': 'Open', 'high': 'High',
+            'low': 'Low', 'close': 'Close',
             'volume': 'Volume'
         })
 
-        # Keep only the required OHLCV columns
+        # Parse datetime and set index
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df = df.set_index('datetime')
+
+        # Ensure timezone
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('UTC')
+        df.index = df.index.tz_convert('US/Eastern')
+
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        print(f"  ✅ Tiingo: {len(df)} bars for {symbol}")
+        return df
+
+    except Exception as e:
+        print(f"  ⚠️ Tiingo fetch error: {e}")
+        return pd.DataFrame()
+
+
+def fetch_alpaca(ticker="SPY", period="5d", interval="1m"):
+    """
+    Fetch from Alpaca Markets (fallback or real-time supplement).
+    """
+    if not ALPACA_KEY or not ALPACA_SECRET:
+        print("  ⚠️ Missing Alpaca credentials")
+        return pd.DataFrame()
+
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+
+    symbol = TICKER_MAP.get(ticker, ticker)
+    print(f"  📡 Fetching {symbol} from Alpaca ({period}, {interval})...")
+
+    # Parse period
+    now = datetime.now(timezone.utc)
+    period_map = {
+        "1d": timedelta(days=1),
+        "5d": timedelta(days=5),
+        "1mo": dateutil.relativedelta.relativedelta(months=1),
+        "3mo": dateutil.relativedelta.relativedelta(months=3),
+    }
+    delta = period_map.get(period, timedelta(days=5))
+    start = now - delta
+
+    # Parse interval
+    tf_map = {"1m": TimeFrame.Minute, "5m": TimeFrame.Minute, "1h": TimeFrame.Hour, "1d": TimeFrame.Day}
+    timeframe = tf_map.get(interval, TimeFrame.Minute)
+
+    try:
+        client = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=timeframe, start=start)
+        bars = client.get_stock_bars(req)
+
+        if not bars or not bars.data or symbol not in bars.data:
+            print("  ⚠️ No Alpaca data")
+            return pd.DataFrame()
+
+        df = bars.df
+        if isinstance(df.index, pd.MultiIndex):
+            df = df.reset_index(level=0, drop=True)
+
+        df = df.rename(columns={
+            'open': 'Open', 'high': 'High', 'low': 'Low',
+            'close': 'Close', 'volume': 'Volume'
+        })
         df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
-        # Ensure Datetime index is timezone-aware (Alpaca returns UTC by default)
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC').tz_convert('US/Eastern')
         else:
             df.index = df.index.tz_convert('US/Eastern')
 
         df = df.dropna()
-        print(f"Fetched {len(df)} rows.")
+        print(f"  ✅ Alpaca: {len(df)} bars for {symbol}")
         return df
 
     except Exception as e:
-        print(f"Error fetching data from Alpaca: {e}")
+        print(f"  ⚠️ Alpaca fetch error: {e}")
         return pd.DataFrame()
+
+
+def fetch_data(ticker="SPY", period="5d", interval="1m"):
+    """
+    Primary data acquisition: Tiingo first, Alpaca fallback.
+    """
+    symbol = TICKER_MAP.get(ticker, ticker)
+
+    # Map interval for Tiingo format
+    tiingo_interval_map = {"1m": "1min", "5m": "5min", "1h": "1hour"}
+    tiingo_interval = tiingo_interval_map.get(interval, "1min")
+
+    # Try Tiingo first (better volume data)
+    df = fetch_tiingo(symbol, period, tiingo_interval)
+    if not df.empty:
+        return df
+
+    # Fallback to Alpaca
+    df = fetch_alpaca(symbol, period, interval)
+    return df
+
 
 def save_data(df, filepath="Data/spy_data.csv"):
     """Saves data to CSV."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     df.to_csv(filepath)
-    print(f"Data saved to {filepath}")
+    print(f"  💾 Saved to {filepath}")
+
 
 def load_data(filepath="Data/spy_data.csv"):
     """Loads data from CSV."""
     if not os.path.exists(filepath):
-        print(f"File {filepath} not found.")
         return None
-    df = pd.read_csv(filepath, index_col=0, parse_dates=True)
-    return df
+    return pd.read_csv(filepath, index_col=0, parse_dates=True)
+
 
 if __name__ == "__main__":
-    # Test fetching
-    df = fetch_data()
-    if not df.empty:
-        save_data(df)
-        print(df.head())
-        print(df.tail())
+    print("Testing Multi-Source Data Loader...")
+    for ticker in ["SPY", "QQQ"]:
+        df = fetch_data(ticker, period="5d", interval="1m")
+        if not df.empty:
+            print(f"\n  {ticker}: {len(df)} rows, {df.index[0]} → {df.index[-1]}")
+            print(f"  Last close: ${df['Close'].iloc[-1]:.2f}")
+            print(f"  Avg volume: {df['Volume'].mean():,.0f}")
+        else:
+            print(f"\n  {ticker}: No data fetched")

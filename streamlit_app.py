@@ -467,13 +467,53 @@ with tab_quant:
         st.info("🔬 No quant signals. Run the background scanner to generate predictions.")
 
     st.markdown("---")
-    st.markdown("#### 📊 Market Microstructure Metrics")
-    st.caption("Live values will populate after Phase 3 engine rebuild.")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("GEX (SPY)", "—", help="Net Gamma Exposure from options chains")
-    m2.metric("Amihud", "—", help="Illiquidity ratio: |return| / $volume")
-    m3.metric("CS Spread", "—", help="Corwin-Schultz synthetic bid-ask spread")
-    m4.metric("RVOL", "—", help="Relative volume vs 20-period SMA")
+    st.markdown("#### 📊 Live Market Microstructure")
+    try:
+        from src.feature_engineering import calculate_gex, add_microstructure_features
+        from src.data_loader import fetch_data
+
+        # GEX (cached as scalar, no dataframe needed)
+        @st.cache_data(ttl=300)
+        def get_live_gex():
+            return calculate_gex("SPY")
+
+        gex_data = get_live_gex()
+
+        # Microstructure from recent data
+        @st.cache_data(ttl=300)
+        def get_live_micro():
+            df = fetch_data("SPY", period="5d", interval="1h")
+            if df.empty or len(df) < 5:
+                return {"amihud": None, "cs_spread": None, "rvol": None}
+            import numpy as np
+            df['log_ret'] = np.log(df['Close'] / df['Close'].shift(1))
+            df = add_microstructure_features(df)
+            last = df.iloc[-1]
+            return {
+                "amihud": last.get("amihud"),
+                "cs_spread": last.get("cs_spread"),
+                "rvol": last.get("rvol"),
+            }
+
+        micro = get_live_micro()
+
+        m1, m2, m3, m4 = st.columns(4)
+        gex_val = gex_data.get('gex', 0)
+        gex_fmt = f"{gex_val/1e6:+.1f}M" if abs(gex_val) > 1e5 else f"{gex_val:+,.0f}"
+        m1.metric("GEX (SPY)", gex_fmt, help=f"Source: {gex_data.get('source', '?')}")
+        m2.metric("Amihud", f"{micro['amihud']:.2e}" if micro.get('amihud') else "—",
+                  help="Illiquidity: |return|/$vol")
+        m3.metric("CS Spread", f"{micro['cs_spread']:.4f}" if micro.get('cs_spread') else "—",
+                  help="Corwin-Schultz estimated spread")
+        m4.metric("RVOL", f"{micro['rvol']:.2f}" if micro.get('rvol') else "—",
+                  help="Relative volume vs 20-bar SMA")
+    except Exception as e:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("GEX (SPY)", "—")
+        m2.metric("Amihud", "—")
+        m3.metric("CS Spread", "—")
+        m4.metric("RVOL", "—")
+        st.caption(f"⚠️ Microstructure unavailable: {e}")
 
 
 # ═══════════════════════ TAB 3: WEATHER ═══════════════════════
