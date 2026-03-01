@@ -14,7 +14,7 @@ EXAMPLES OF VALUE TRAPS:
 The AI reads breaking news and context to validate that the mathematical edge is REAL.
 """
 
-import google.generativeai as genai
+from google import genai
 import os
 import json
 from datetime import datetime
@@ -29,8 +29,8 @@ class AIValidator:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found")
 
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = 'gemini-2.5-flash'
 
         # Add Hugging Face pre-filter
         try:
@@ -139,7 +139,10 @@ RULES:
 """
 
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             text = response.text
 
             # Parse JSON response

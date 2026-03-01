@@ -1,4 +1,4 @@
-import google.generativeai as genai
+from google import genai
 import os
 import json
 from dotenv import load_dotenv
@@ -21,8 +21,8 @@ class NewsAnalyzer:
             print("⚠️ GEMINI_API_KEY not found in environment. News analysis will be skipped.")
             return
         
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        self.client = genai.Client(api_key=self.api_key)
+        self.model_name = 'gemini-1.5-flash-latest'
 
     def get_general_sentiment(self, vix_value, macro_news_snippets):
         """
@@ -42,11 +42,14 @@ class NewsAnalyzer:
             "summary": "One sentence summary."
         }}
         """
-        if not getattr(self, "model", None):
+        if not getattr(self, "client", None):
             return {"heat_score": 0, "label": "Neutral", "vix_contribution": 0, "news_contribution": 0, "summary": "Sentiment engine offline (No API Key)."}
         
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             text = response.text
             start = text.find('{')
             end = text.rfind('}') + 1
@@ -98,7 +101,7 @@ class NewsAnalyzer:
         }}
         """
 
-        if not self.model:
+        if not getattr(self, "client", None):
             return {
                 "adjusted_prob": current_prob,
                 "impact_score": 0,
@@ -107,7 +110,10 @@ class NewsAnalyzer:
             }
 
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             # Find JSON block
             text = response.text
             start = text.find('{')
