@@ -25,21 +25,32 @@ load_dotenv()
 def prepare_daily_data(df, ticker="SPY"):
     """
     Prepares data using the full 3-cluster feature pipeline.
-    Target: Close price at 16:00 same day.
+    Target: NEXT-HOUR close price (shift(-1)).
+
+    Filters overnight/weekend gaps so shift(-1) only references
+    the actual next intraday bar, not Monday's open from Friday's close.
     """
     from src.feature_engineering import create_features, FEATURE_COLUMNS
 
     df, gex_data = create_features(df, ticker)
 
-    # Target: last close of day (EOD at 16:00)
-    daily_closes = df['Close'].resample('D').last()
-    df['Target_Close'] = df.index.normalize().map(daily_closes)
+    # Filter out overnight/weekend gaps (>2h between bars)
+    # shift(-1) on a gap bar would predict Monday from Friday — not useful
+    time_gaps = df.index.to_series().diff().shift(-1).dt.total_seconds() / 3600
+    intraday_mask = time_gaps <= 2.0  # next bar is within 2 hours
+    df = df[intraday_mask]
+
+    # Target: next hour's close price (the actual next bar)
+    df['Target_Close'] = df['Close'].shift(-1)
+
+    # Target for regressor: next-bar % return (scale-invariant)
+    df['Target_Return'] = (df['Target_Close'] - df['Close']) / df['Close'] * 100
 
     # Binary direction target: 1 if next bar is up, 0 if down
-    df['Target_Direction'] = (df['Close'].shift(-1) > df['Close']).astype(int)
+    df['Target_Direction'] = (df['Target_Close'] > df['Close']).astype(int)
 
-    # Drop NaN
-    df = df.dropna(subset=FEATURE_COLUMNS + ['Target_Close', 'Target_Direction'])
+    # Drop NaN (last row has no next bar)
+    df = df.dropna(subset=FEATURE_COLUMNS + ['Target_Close', 'Target_Direction', 'Target_Return'])
 
     return df, FEATURE_COLUMNS, gex_data
 
@@ -57,16 +68,16 @@ def train_daily_model(df, ticker="SPY"):
         return None
 
     X = df_proc[feature_cols]
-    y_price = df_proc["Target_Close"]
+    y_return = df_proc["Target_Return"]
     y_dir = df_proc["Target_Direction"]
 
     # Time-based train/test split
     train_size = int(len(X) * 0.85)
     X_train, X_test = X.iloc[:train_size], X.iloc[train_size:]
-    y_price_train, y_price_test = y_price.iloc[:train_size], y_price.iloc[train_size:]
+    y_ret_train, y_ret_test = y_return.iloc[:train_size], y_return.iloc[train_size:]
     y_dir_train, y_dir_test = y_dir.iloc[:train_size], y_dir.iloc[train_size:]
 
-    # ── Model 1: Price Regressor (RMSE) ──
+    # ── Model 1: Return Regressor (RMSE in % points) ──
     regressor = lgb.LGBMRegressor(
         n_estimators=500,
         learning_rate=0.05,
@@ -79,15 +90,15 @@ def train_daily_model(df, ticker="SPY"):
         verbose=-1,
     )
     regressor.fit(
-        X_train, y_price_train,
-        eval_set=[(X_test, y_price_test)],
+        X_train, y_ret_train,
+        eval_set=[(X_test, y_ret_test)],
         eval_metric="rmse",
         callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
     )
 
     preds = regressor.predict(X_test)
-    rmse = np.sqrt(np.mean((preds - y_price_test) ** 2))
-    print(f"  📊 {ticker} Regressor RMSE: ${rmse:.2f}")
+    rmse = np.sqrt(np.mean((preds - y_ret_test) ** 2))
+    print(f"  📊 {ticker} Regressor RMSE: {rmse:.4f}% (next-hour return)")
 
     # ── Model 2: Direction Classifier (Brier Score) ──
     classifier = lgb.LGBMClassifier(
