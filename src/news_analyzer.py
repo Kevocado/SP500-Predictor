@@ -22,7 +22,7 @@ class NewsAnalyzer:
             return
         
         self.client = genai.Client(api_key=self.api_key)
-        self.model_name = 'gemini-1.5-flash-latest'
+        self.model_name = 'gemini-2.5-flash'
 
     def get_general_sentiment(self, vix_value, macro_news_snippets):
         """
