@@ -170,20 +170,44 @@ def render_grid(data, key_suffix, empty_msg="No opportunities found."):
     rows = []
     for item in data:
         if isinstance(item, dict):
+            kalshi_url = item.get('KalshiUrl', item.get('kalshi_url', ''))
+            market_name = str(item.get('Market', item.get('market_title', '')))[:55]
             rows.append({
                 'Engine': item.get('Engine', item.get('engine', '')),
-                'Market': str(item.get('Market', item.get('market_title', '')))[:55],
+                'Market': market_name,
                 'Action': item.get('Action', item.get('action', '')),
                 'Edge %': round(float(item.get('Edge', item.get('edge', 0))), 1),
                 'Model P': round(float(item.get('ModelProb', item.get('model_prob', 0))), 1),
                 'Price ¢': round(float(item.get('MarketPrice', item.get('market_price', 0))), 0),
                 'Date': item.get('MarketDate', item.get('market_date', '')),
+                'Kalshi': kalshi_url,
             })
     if not rows:
         st.info(empty_msg)
         return
     df = pd.DataFrame(rows).sort_values('Edge %', ascending=False)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Render as styled cards with clickable Kalshi links
+    for _, row in df.iterrows():
+        edge_color = '#34d399' if row['Edge %'] > 0 else '#f87171'
+        link_html = f'<a href="{row["Kalshi"]}" target="_blank" style="color: #60a5fa; text-decoration: none; font-size: 0.8rem;">View on Kalshi ↗</a>' if row['Kalshi'] else ''
+        st.markdown(f"""
+        <div class="quant-card" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; margin-bottom: 8px;">
+            <div style="flex: 3;">
+                <strong style="color: #e5e7eb;">{row['Market']}</strong><br>
+                <span class="stat-pill">{row['Engine']}</span>
+                <span class="stat-pill">{row['Action']}</span>
+                <span class="stat-pill">{row['Date']}</span>
+            </div>
+            <div style="flex: 1; text-align: center;">
+                <span style="color: {edge_color}; font-family: 'JetBrains Mono', monospace; font-size: 1.2rem; font-weight: 700;">{row['Edge %']:+.1f}%</span><br>
+                <span style="color: #6b7280; font-size: 0.75rem;">Model {row['Model P']:.0f}¢ vs Mkt {row['Price ¢']:.0f}¢</span>
+            </div>
+            <div style="flex: 1; text-align: right;">
+                {link_html}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -518,33 +542,89 @@ with tab_quant:
 
 # ═══════════════════════ TAB 3: WEATHER ═══════════════════════
 with tab_wx:
-    st.markdown("### ⛈️ Weather Markets — NWS Settlement Arbitrage")
-    st.caption("NWS is the official settlement source. 6AM-6PM daily highs only.")
+    st.markdown("### ⛈️ Weather Markets — NWS Climate Arbitrage")
+    st.caption("NWS is the official settlement source for all Kalshi weather markets. Showing today & tomorrow.")
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    tmrw_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Filter weather opps to today/tomorrow only
+    wx_today_tmrw = []
+    for o in weather_opps:
+        md = o.get('MarketDate', o.get('market_date', ''))
+        if md and (md[:10] == today_str or md[:10] == tmrw_str):
+            wx_today_tmrw.append(o)
+        elif not md:
+            wx_today_tmrw.append(o)
 
     col_w1, col_w2 = st.columns([3, 1])
     with col_w1:
-        if weather_opps:
-            render_grid(weather_opps, "weather", empty_msg="🌤️ No weather edges found.")
+        if wx_today_tmrw:
+            render_grid(wx_today_tmrw, "weather", empty_msg="🌤️ No weather edges for today/tomorrow.")
+
+            # Edge reasoning section
+            st.markdown("---")
+            st.markdown("##### 💡 Why These Markets?")
+            st.markdown("""
+            <div class="quant-card">
+                <span style="color: #94a3b8; font-size: 0.85rem;">
+                Markets are selected when our NWS-based model probability diverges from the Kalshi market price
+                by more than <strong>10%</strong>. The NWS API is the official settlement source, so when their
+                forecast data disagrees with market pricing, that's a real statistical edge.<br><br>
+                <strong>Edge = |NWS Probability - Market Price|</strong><br>
+                We compute NWS probability using the hourly forecast: if the forecast high is well above/below
+                the strike, confidence is high. Markets within 2°F of the strike get lower confidence.
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.info("🌤️ Waiting for weather markets to open.")
+            st.info("🌤️ No weather edges for today or tomorrow. Markets may not be open yet.")
+            st.markdown("""
+            <div class="quant-card">
+                <span style="color: #94a3b8; font-size: 0.85rem;">
+                <strong>How weather arbitrage works:</strong> Kalshi offers daily markets on temperature,
+                snowfall, wind speed, and precipitation across NYC, Chicago, and Miami. The NWS API provides
+                official forecasts that are the actual settlement source. When NWS data disagrees with market
+                pricing, we flag the edge.<br><br>
+                <strong>Market Types:</strong> Temperature highs (6AM-6PM), snowfall accumulation,
+                max wind speed, and precipitation totals.
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+
     with col_w2:
-        st.markdown("##### 📡 Live NWS")
+        st.markdown("##### 📡 NWS Climate Dashboard")
         try:
             from scripts.engines.weather_engine import WeatherEngine
-            forecasts = WeatherEngine().get_all_forecasts()
-            for city, dates in forecasts.items():
-                cn = {"NYC": "New York", "Chicago": "Chicago", "Miami": "Miami"}.get(city, city)
-                with st.expander(f"📍 {cn}", expanded=True):
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    tmrw = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-                    if today in dates:
-                        st.markdown(f"**Today:** {dates[today]}°F")
-                    if tmrw in dates:
-                        st.markdown(f"**Tomorrow:** {dates[tmrw]}°F")
+            we = WeatherEngine()
+            forecasts = we.get_all_forecasts()
+            full = getattr(we, '_full_forecasts', {})
+
+            for city in ['NYC', 'Chicago', 'Miami']:
+                cn = {'NYC': 'New York', 'Chicago': 'Chicago', 'Miami': 'Miami'}.get(city, city)
+                temp_data = forecasts.get(city, {})
+                climate = full.get(city, {})
+
+                today_temp = temp_data.get(today_str)
+                tmrw_temp = temp_data.get(tmrw_str)
+                today_clim = climate.get(today_str, {})
+                tmrw_clim = climate.get(tmrw_str, {})
+
+                if today_temp or tmrw_temp:
+                    with st.expander(f"📍 {cn}", expanded=True):
+                        if today_temp:
+                            wind = today_clim.get('max_wind', '?')
+                            precip = today_clim.get('max_precip_pct', 0)
+                            snow = '❄️ Snow' if today_clim.get('snow_likely') else ''
+                            st.markdown(f"**Today:** {today_temp}°F · 💨{wind}mph · 🌧️{precip}% {snow}")
+                        if tmrw_temp:
+                            wind = tmrw_clim.get('max_wind', '?')
+                            precip = tmrw_clim.get('max_precip_pct', 0)
+                            snow = '❄️ Snow' if tmrw_clim.get('snow_likely') else ''
+                            st.markdown(f"**Tomorrow:** {tmrw_temp}°F · 💨{wind}mph · 🌧️{precip}% {snow}")
         except Exception:
             st.caption("NWS forecast unavailable.")
 
-    # Auto-sell thresholds
     st.markdown("---")
     st.markdown("""
     <div class="auto-sell-box">
@@ -644,104 +724,247 @@ with tab_macro:
 with tab_bt:
     st.markdown("### 📊 Backtesting — Engine Performance")
 
-    bt_weather, bt_macro, bt_quant = st.tabs(["⛈️ Weather", "🏛️ Macro", "🧪 Quant ML"])
+    bt_weather, bt_quant = st.tabs(["⛈️ Weather Accuracy", "🧪 Quant ML"])
 
+    # ── Weather Prediction Accuracy ──
     with bt_weather:
-        st.markdown("#### ⛈️ NWS Temperature Prediction Accuracy")
+        st.markdown("#### ⛈️ Weather Prediction Accuracy")
+        st.caption("Tracks whether our model's predicted outcome matched the actual NWS-reported settlement.")
+
         try:
-            from azure.storage.blob import BlobServiceClient
-            conn_str = os.getenv("AZURE_CONNECTION_STRING", "").strip('"')
-            if conn_str:
-                blob_svc = BlobServiceClient.from_connection_string(conn_str, connection_timeout=10)
-                container = blob_svc.get_container_client("market-snapshots")
-                blobs = sorted(container.list_blobs(), key=lambda b: b.name, reverse=True)
-                snapshots = []
-                for blob in blobs[:50]:
-                    try:
-                        data = container.download_blob(blob.name).readall()
-                        snapshots.append(json.loads(data))
-                    except Exception:
-                        pass
-                records = [{'timestamp': s.get('timestamp_utc', ''),
-                            'live_opps': s.get('live_opportunities', 0),
-                            'total': s.get('markets_analyzed', 0)} for s in snapshots]
-                if records:
-                    df = pd.DataFrame(records)
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-                    df = df.dropna(subset=['timestamp']).sort_values('timestamp')
-                    if len(df) > 1:
-                        st.line_chart(df.set_index('timestamp')['live_opps'], use_container_width=True)
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Scans", len(df))
-                        c2.metric("Avg Opps", f"{df['live_opps'].mean():.0f}")
-                        c3.metric("Peak", int(df['live_opps'].max()))
-                    else:
-                        st.info("Need more snapshots.")
+            from src.supabase_client import get_trade_history
+            trades = get_trade_history(limit=200)
+            wx_trades = [t for t in (trades or []) if t.get('engine', '').lower() == 'weather']
+
+            if wx_trades:
+                correct = sum(1 for t in wx_trades if t.get('resolved_outcome') is not None and
+                              ((t.get('action', '').upper() == 'BUY YES' and t.get('resolved_outcome') == True) or
+                               (t.get('action', '').upper() == 'BUY NO' and t.get('resolved_outcome') == False)))
+                total_resolved = sum(1 for t in wx_trades if t.get('resolved_outcome') is not None)
+                total_pending = len(wx_trades) - total_resolved
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Predictions", len(wx_trades))
+                if total_resolved > 0:
+                    acc = (correct / total_resolved) * 100
+                    m2.metric("Accuracy", f"{acc:.1f}%", f"{correct}/{total_resolved} correct")
+                    m3.metric("Pending", total_pending)
+
+                    # Daily accuracy breakdown
+                    st.markdown("---")
+                    st.markdown("##### 📅 Daily Accuracy")
+                    daily_data = {}
+                    for t in wx_trades:
+                        if t.get('resolved_outcome') is None:
+                            continue
+                        day = str(t.get('market_date', t.get('created_at', '')))[:10]
+                        if day not in daily_data:
+                            daily_data[day] = {'correct': 0, 'total': 0}
+                        daily_data[day]['total'] += 1
+                        was_correct = (t.get('action', '').upper() == 'BUY YES' and t['resolved_outcome'] == True) or \
+                                      (t.get('action', '').upper() == 'BUY NO' and t['resolved_outcome'] == False)
+                        if was_correct:
+                            daily_data[day]['correct'] += 1
+
+                    if daily_data:
+                        daily_df = pd.DataFrame([
+                            {'Date': d, 'Accuracy %': (v['correct']/v['total'])*100, 'Trades': v['total']}
+                            for d, v in sorted(daily_data.items())
+                        ])
+                        daily_df['Date'] = pd.to_datetime(daily_df['Date'], errors='coerce')
+                        daily_df = daily_df.dropna(subset=['Date'])
+                        if not daily_df.empty:
+                            st.bar_chart(daily_df.set_index('Date')['Accuracy %'], use_container_width=True, height=200)
+                            st.dataframe(daily_df.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
                 else:
-                    st.info("No snapshots yet. Run scanner.")
+                    m2.metric("Accuracy", "—")
+                    m3.metric("Pending", total_pending)
+                    st.info("No resolved weather predictions yet. Outcomes populate after market settlement.")
             else:
-                st.info("Azure connection not configured.")
+                st.info("No weather trades logged yet. Run the scanner during market hours to generate predictions.")
         except Exception as e:
-            st.info(f"Weather backtest: {e}")
+            st.info(f"Weather accuracy data will populate after the scanner runs: {e}")
 
-    with bt_macro:
-        st.markdown("#### 🏛️ FRED Economic History")
-        try:
-            import fredapi
-            fk = os.getenv('FRED_API_KEY', '').strip('"')
-            if fk:
-                fred = fredapi.Fred(api_key=fk)
-                cpi = fred.get_series('CPIAUCSL', observation_start='2023-01-01')
-                if len(cpi) >= 13:
-                    cpi_yoy = (((cpi / cpi.shift(12)) - 1) * 100).dropna()
-                    st.markdown("**CPI Year-over-Year (%)**")
-                    st.line_chart(cpi_yoy, use_container_width=True)
-                    c1, c2 = st.columns(2)
-                    c1.metric("Current CPI YoY", f"{cpi_yoy.iloc[-1]:.2f}%")
-                    c2.metric("12M Range", f"{cpi_yoy.iloc[-12:].min():.1f}% — {cpi_yoy.iloc[-12:].max():.1f}%")
-                fed = fred.get_series('DFEDTARU', observation_start='2023-01-01')
-                if len(fed) > 0:
-                    st.markdown("**Fed Funds Rate (%)**")
-                    st.line_chart(fed, use_container_width=True)
-                    c1, c2 = st.columns(2)
-                    c1.metric("Current Rate", f"{fed.iloc[-1]:.2f}%")
-                    c2.metric("1Y Change", f"{fed.iloc[-1] - fed.iloc[min(len(fed)-1, 252)]:.2f}%")
-            else:
-                st.warning("FRED_API_KEY not set.")
-        except Exception as e:
-            st.error(f"FRED error: {e}")
-
+    # ── Quant ML Backtesting ──
     with bt_quant:
-        st.markdown("#### 🧪 Quant ML — P&L Replay")
-        try:
-            from src.backtester import fetch_historical_data, simulate_backtest
-            with st.spinner("Loading logs..."):
-                logs_df = fetch_historical_data()
-            if not logs_df.empty:
-                c1, c2 = st.columns(2)
-                bankroll = c1.number_input("Bankroll ($)", value=100, min_value=10, max_value=10000)
-                min_edge = c2.slider("Min Edge (%)", 5, 30, 10)
-                result = simulate_backtest(logs_df, bankroll=bankroll, min_edge=min_edge)
-                m = result['metrics']
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Trades", m['total_trades'])
-                m2.metric("Win Rate", f"{m['win_rate']}%")
-                m3.metric("Return", f"{m['total_return']}%")
-                m4.metric("Sharpe", m['sharpe'])
-                m5.metric("Max DD", f"-{m['max_drawdown']}%")
-                if result['equity_curve']:
-                    eq = pd.DataFrame(result['equity_curve'], columns=['ts', 'eq'])
-                    eq['ts'] = pd.to_datetime(eq['ts'], errors='coerce')
-                    eq = eq.dropna(subset=['ts'])
-                    if not eq.empty:
-                        st.line_chart(eq.set_index('ts')['eq'], use_container_width=True)
-                if result['trades']:
-                    with st.expander(f"📋 Trade Log ({len(result['trades'])} trades)"):
-                        st.dataframe(pd.DataFrame(result['trades']), use_container_width=True)
-            else:
-                st.info("No logs yet. Run scanner a few times.")
-        except Exception as e:
-            st.error(f"Backtest error: {e}")
+        st.markdown("#### 🧪 Quant ML — Directional Accuracy & Kelly P&L")
+        st.caption("Tests how well the model predicts hourly market direction using historical data with Quarter-Kelly position sizing.")
+
+        # Model info box
+        st.markdown("""
+        <div class="quant-card">
+            <strong style="color: #60a5fa;">How This Works</strong><br>
+            <span style="color: #94a3b8; font-size: 0.85rem;">
+            Our LightGBM model uses <strong>20 features</strong> across 3 clusters (Momentum, Microstructure, Derivatives)
+            to predict the next-hour close price. A prediction is "correct" if the model predicts the right <em>direction</em>
+            (up or down). We then simulate P&L using <strong>Quarter-Kelly sizing</strong> (0.25× optimal bet fraction)
+            on each correct/incorrect call.<br><br>
+            <strong>Auto-Retraining:</strong> The Self-Healing Optimizer runs weekly (<code>ai_optimizer.yml</code>),
+            checks the Brier score, and automatically retrains if accuracy drifts below threshold (0.35).
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        c1, c2 = st.columns(2)
+        bankroll = c1.number_input("Starting Bankroll ($)", value=1000, min_value=100, max_value=100000)
+        lookback = c2.selectbox("Lookback Period", ["1 Week", "2 Weeks", "1 Month"], index=1)
+
+        lookback_map = {"1 Week": "5d", "2 Weeks": "5d", "1 Month": "1mo"}
+        period = lookback_map.get(lookback, "5d")
+
+        if st.button("🚀 Run Backtest", use_container_width=True):
+            with st.spinner("Fetching data & running predictions..."):
+                try:
+                    from src.data_loader import fetch_data
+                    from src.model_daily import load_daily_model, quarter_kelly
+                    from src.feature_engineering import create_features, FEATURE_COLUMNS
+                    import lightgbm as lgb
+
+                    df = fetch_data("SPY", period=period, interval="1h")
+                    if df.empty or len(df) < 10:
+                        st.warning("Not enough historical data. Try again during market hours.")
+                    else:
+                        model = load_daily_model("SPY")
+                        if model is None:
+                            st.warning("No trained model found for SPY. Run the optimizer to train one.")
+                        else:
+                            df_feat, gex_data = create_features(df, "SPY")
+
+                            # Dynamically get the model's expected features
+                            if isinstance(model, lgb.Booster):
+                                model_features = model.feature_name()
+                            elif hasattr(model, 'feature_names_in_'):
+                                model_features = list(model.feature_names_in_)
+                            elif hasattr(model, 'booster_'):
+                                model_features = model.booster_.feature_name()
+                            else:
+                                model_features = FEATURE_COLUMNS
+
+                            # Add raw OHLCV columns if model expects them (old model compatibility)
+                            for col in ['Close', 'High', 'Low', 'Open', 'Volume', 'minute']:
+                                if col in model_features and col not in df_feat.columns:
+                                    if col == 'minute':
+                                        df_feat['minute'] = df_feat.index.minute
+                                    # Close/High/Low/Open/Volume should already exist from original df
+
+                            # Only keep rows where we have enough data
+                            avail = [c for c in model_features if c in df_feat.columns]
+                            df_clean = df_feat.dropna(subset=[c for c in avail if c in df_feat.columns])
+
+                            if len(df_clean) < 5:
+                                st.warning(f"Only {len(df_clean)} valid rows after features. Need 5+. Try '1 Month'.")
+                            else:
+                                # Align to model's features, fill missing with 0
+                                X = df_clean.reindex(columns=model_features, fill_value=0)
+
+                                if isinstance(model, lgb.Booster):
+                                    preds = model.predict(X)
+                                else:
+                                    preds = model.predict(X)
+
+                                actuals = df_clean['Close'].values
+
+                                # Directional accuracy: did we predict the right direction?
+                                results = []
+                                equity = bankroll
+                                equity_curve = []
+                                daily_accuracy = {}
+
+                                for i in range(1, len(actuals)):
+                                    actual_dir = 1 if actuals[i] > actuals[i-1] else -1
+                                    pred_dir = 1 if preds[i] > actuals[i-1] else -1
+                                    correct = actual_dir == pred_dir
+
+                                    # Expected move size
+                                    actual_pct = abs(actuals[i] - actuals[i-1]) / actuals[i-1]
+
+                                    # Kelly sizing
+                                    edge = actual_pct  # approximate edge from move
+                                    prob = 0.55  # base assumption
+                                    kelly_pct = quarter_kelly(edge, prob, max_kelly_pct=6)
+                                    bet_size = equity * (kelly_pct / 100)
+
+                                    if correct:
+                                        pnl = bet_size * actual_pct * 10  # leverage-adjusted
+                                    else:
+                                        pnl = -bet_size * actual_pct * 10
+
+                                    equity += pnl
+                                    ts = df_clean.index[i]
+                                    equity_curve.append({'Time': ts, 'Equity': round(equity, 2)})
+
+                                    day = str(ts.date())
+                                    if day not in daily_accuracy:
+                                        daily_accuracy[day] = {'correct': 0, 'total': 0}
+                                    daily_accuracy[day]['total'] += 1
+                                    if correct:
+                                        daily_accuracy[day]['correct'] += 1
+
+                                    results.append({
+                                        'Time': ts,
+                                        'Actual': round(actuals[i], 2),
+                                        'Predicted': round(preds[i], 2),
+                                        'Direction': '✅' if correct else '❌',
+                                        'PnL': round(pnl, 2),
+                                    })
+
+                                total_correct = sum(1 for r in results if r['Direction'] == '✅')
+                                total_trades = len(results)
+                                win_rate = (total_correct / total_trades * 100) if total_trades > 0 else 0
+                                total_pnl = equity - bankroll
+                                total_return = (total_pnl / bankroll * 100) if bankroll > 0 else 0
+
+                                # Max drawdown
+                                peak = bankroll
+                                max_dd = 0
+                                for pt in equity_curve:
+                                    if pt['Equity'] > peak:
+                                        peak = pt['Equity']
+                                    dd = (peak - pt['Equity']) / peak * 100
+                                    if dd > max_dd:
+                                        max_dd = dd
+
+                                # Metrics strip
+                                st.markdown("#### 📊 Results")
+                                m1, m2, m3, m4, m5 = st.columns(5)
+                                m1.metric("Predictions", total_trades)
+                                m2.metric("Win Rate", f"{win_rate:.1f}%")
+                                m3.metric("Total P&L", f"${total_pnl:+,.2f}")
+                                m4.metric("Return", f"{total_return:+.1f}%")
+                                m5.metric("Max Drawdown", f"-{max_dd:.1f}%")
+
+                                # Equity curve
+                                st.markdown("---")
+                                st.markdown("##### 📈 Equity Curve (Quarter-Kelly)")
+                                eq_df = pd.DataFrame(equity_curve)
+                                if not eq_df.empty:
+                                    eq_df['Time'] = pd.to_datetime(eq_df['Time'], errors='coerce')
+                                    eq_df = eq_df.dropna(subset=['Time'])
+                                    if not eq_df.empty:
+                                        st.line_chart(eq_df.set_index('Time')['Equity'], use_container_width=True, height=250)
+
+                                # Daily accuracy
+                                st.markdown("---")
+                                st.markdown("##### 📅 Daily Directional Accuracy")
+                                if daily_accuracy:
+                                    day_df = pd.DataFrame([
+                                        {'Date': d, 'Correct': v['correct'], 'Total': v['total'],
+                                         'Accuracy %': round(v['correct']/v['total']*100, 1)}
+                                        for d, v in sorted(daily_accuracy.items())
+                                    ])
+                                    st.dataframe(day_df, use_container_width=True, hide_index=True)
+
+                                # Trade log
+                                st.markdown("---")
+                                with st.expander(f"📋 Full Trade Log ({total_trades} predictions)"):
+                                    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+
+                except Exception as e:
+                    st.error(f"Backtest error: {e}")
+                    import traceback
+                    st.caption(traceback.format_exc())
 
 
 # ═══════════════════════ TAB 6: QUANT GLOSSARY ════════════════

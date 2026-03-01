@@ -4,12 +4,15 @@ Weather Arbitrage Engine - NWS API + Kalshi Series
 EDGE SOURCE: National Weather Service is the official settlement source for Kalshi weather markets.
 If NWS forecast says 90% chance of 40°F+ high, but Kalshi "above 40°" trading at 50¢ → 40% edge.
 
-KALSHI SERIES:
-  KXHIGHNY  - NYC daily high temperature
-  KXHIGHCHI - Chicago daily high temperature
-  KXHIGHMIA - Miami daily high temperature
+KALSHI SERIES (ALL CLIMATE EVENTS):
+  Temperature: KXHIGHNY, KXHIGHCHI, KXHIGHMIA
+  Snowfall:    KXSNOWNY, KXSNOWCHI
+  Wind Speed:  KXWINDNY, KXWINDCHI
+  Precipitation: KXRAINNY, KXRAINCHI, KXRAINMIA
 
 DATA: FREE - https://api.weather.gov (NWS is settlement source!)
+NWS provides: temperature, precipitation probability, wind speed, snowfall estimates,
+              short forecast descriptions, and dew point data.
 """
 
 import requests
@@ -80,13 +83,92 @@ class WeatherEngine:
             print(f"    ⚠️ NWS fetch error for {city}: {e}")
             return {}
 
+    def get_nws_full_forecast(self, city):
+        """
+        Fetch comprehensive NWS forecast including temp, precip, wind, snow.
+        Returns dict per date with all climate metrics.
+        """
+        try:
+            grid = self.cities[city]
+            url = f"{self.base_url}/gridpoints/{grid['office']}/{grid['gridX']},{grid['gridY']}/forecast/hourly"
+            response = requests.get(url, headers={'User-Agent': 'KalshiEdgeFinder/1.0'}, timeout=15)
+            response.raise_for_status()
+            periods = response.json()['properties']['periods']
+
+            daily = {}
+            for p in periods:
+                dt = datetime.fromisoformat(p['startTime'].replace('Z', '+00:00'))
+                date_str = dt.strftime('%Y-%m-%d')
+
+                if date_str not in daily:
+                    daily[date_str] = {
+                        'high_temp': None,
+                        'max_wind': 0,
+                        'max_precip_pct': 0,
+                        'snow_likely': False,
+                        'conditions': set(),
+                    }
+
+                temp = p['temperature']
+                wind_speed = p.get('windSpeed', '0 mph')
+                precip_pct = p.get('probabilityOfPrecipitation', {}).get('value', 0) or 0
+                short_forecast = p.get('shortForecast', '').lower()
+
+                # Temperature (6AM-6PM only for Kalshi)
+                if 6 <= dt.hour <= 18:
+                    if daily[date_str]['high_temp'] is None or temp > daily[date_str]['high_temp']:
+                        daily[date_str]['high_temp'] = temp
+
+                # Wind speed (extract number from "10 mph")
+                try:
+                    ws = int(str(wind_speed).split()[0])
+                    if ws > daily[date_str]['max_wind']:
+                        daily[date_str]['max_wind'] = ws
+                except (ValueError, IndexError):
+                    pass
+
+                # Precipitation probability
+                if precip_pct > daily[date_str]['max_precip_pct']:
+                    daily[date_str]['max_precip_pct'] = precip_pct
+
+                # Snow detection
+                if any(w in short_forecast for w in ['snow', 'sleet', 'ice', 'wintry']):
+                    daily[date_str]['snow_likely'] = True
+
+                # Conditions summary
+                daily[date_str]['conditions'].add(short_forecast)
+
+            # Convert condition sets to strings
+            for d in daily:
+                conditions = daily[d]['conditions']
+                # Pick the most descriptive condition
+                daily[d]['conditions'] = ', '.join(list(conditions)[:3])
+
+            return daily
+        except Exception as e:
+            print(f"    ⚠️ NWS full forecast error for {city}: {e}")
+            return {}
+
     def get_all_forecasts(self):
-        """Helper for the UI to fetch all city forecasts at once."""
+        """
+        Fetch all city forecasts. Returns both simple temp dict (for backward compat)
+        and full climate data.
+        """
         forecasts = {}
+        full_forecasts = {}
         for city in self.cities:
+            # Simple temp highs (backward compatible)
             highs = self.get_nws_forecast(city)
             if highs:
                 forecasts[city] = highs
+
+            # Full climate data
+            full = self.get_nws_full_forecast(city)
+            if full:
+                full_forecasts[city] = full
+
+        # Store full forecasts for UI access
+        self._full_forecasts = full_forecasts
         return forecasts
 
     def check_for_forecast_changes(self, city, new_forecasts):

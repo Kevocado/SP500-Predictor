@@ -338,9 +338,28 @@ def check_kalshi_connection():
 
 # Known series tickers for our target categories
 WEATHER_SERIES = {
+    # Daily High Temperature (NWS official settlement)
     'NYC': 'KXHIGHNY',
     'Chicago': 'KXHIGHCHI',
     'Miami': 'KXHIGHMIA',
+}
+
+# Extended weather series — all climate events Kalshi offers
+WEATHER_SERIES_ALL = {
+    # Temperature
+    'NYC_TEMP': {'series': 'KXHIGHNY', 'city': 'NYC', 'type': 'temperature'},
+    'CHI_TEMP': {'series': 'KXHIGHCHI', 'city': 'Chicago', 'type': 'temperature'},
+    'MIA_TEMP': {'series': 'KXHIGHMIA', 'city': 'Miami', 'type': 'temperature'},
+    # Snowfall (inches)
+    'NYC_SNOW': {'series': 'KXSNOWNY', 'city': 'NYC', 'type': 'snowfall'},
+    'CHI_SNOW': {'series': 'KXSNOWCHI', 'city': 'Chicago', 'type': 'snowfall'},
+    # Wind Speed (mph)
+    'NYC_WIND': {'series': 'KXWINDNY', 'city': 'NYC', 'type': 'wind'},
+    'CHI_WIND': {'series': 'KXWINDCHI', 'city': 'Chicago', 'type': 'wind'},
+    # Precipitation (inches)
+    'NYC_RAIN': {'series': 'KXRAINNY', 'city': 'NYC', 'type': 'precipitation'},
+    'CHI_RAIN': {'series': 'KXRAINCHI', 'city': 'Chicago', 'type': 'precipitation'},
+    'MIA_RAIN': {'series': 'KXRAINMIA', 'city': 'Miami', 'type': 'precipitation'},
 }
 
 ECONOMICS_SERIES = {
@@ -389,9 +408,25 @@ def get_weather_markets():
         for m in markets:
             m['_city'] = city
             m['_series'] = series
+            m['_type'] = 'temperature'
         all_markets.extend(markets)
         if markets:
             print(f"  ⛈️ {city}: {len(markets)} temperature markets")
+    return all_markets
+
+
+def get_all_weather_markets():
+    """Fetch ALL weather markets: temperature, snowfall, wind, precipitation."""
+    all_markets = []
+    for key, info in WEATHER_SERIES_ALL.items():
+        markets = get_markets_by_series(info['series'])
+        for m in markets:
+            m['_city'] = info['city']
+            m['_series'] = info['series']
+            m['_type'] = info['type']
+        all_markets.extend(markets)
+        if markets:
+            print(f"  🌦️ {info['city']} {info['type']}: {len(markets)} markets")
     return all_markets
 
 
